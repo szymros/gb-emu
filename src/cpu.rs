@@ -1,5 +1,6 @@
+use crate::memory::Mem;
 use log::info;
-use std::{result, u16, u8};
+use std::{cell::RefCell, rc::Rc, result, u16, u8};
 
 const ZERO_FLAG_BYTE_POSITION: u8 = 7;
 const SUBTRACT_FLAG_BYTE_POSITION: u8 = 6;
@@ -79,23 +80,6 @@ impl Flags {
             | (if self.substract { 1 } else { 0 }) << SUBTRACT_FLAG_BYTE_POSITION
             | (if self.half_carry { 1 } else { 0 }) << HALF_CARRY_FLAG_BYTE_POSITION
             | (if self.carry { 1 } else { 0 }) << CARRY_FLAG_BYTE_POSITION
-    }
-}
-
-#[derive(Copy, Clone)]
-struct Bus {
-    pub memory: [u8; 0xFFFF + 1],
-}
-impl Bus {
-    fn read_byte(&self, address: u16) -> u8 {
-        return self.memory[address as usize];
-    }
-    fn read_word(&self, address: u16) -> u16 {
-        return (self.read_byte(address) as u16)
-            | ((self.read_byte(address.wrapping_add(1)) as u16) << 8);
-    }
-    fn write_byte(&mut self, address: u16, byte: u8) {
-        self.memory[address as usize] = byte;
     }
 }
 
@@ -203,17 +187,16 @@ enum LdParam {
     SP,
 }
 
-#[derive(Copy, Clone)]
 pub struct Cpu {
     pub(crate) registers: Registers,
     pub(crate) program_counter: u16,
-    pub memory: Bus,
+    pub memory: Rc<RefCell<Mem>>,
     halted: bool,
     interrupts_enabled: bool,
 }
 
 impl Cpu {
-    pub fn new(mem: [u8; 0xFFFF + 1]) -> Self {
+    pub fn new(memory: Rc<RefCell<Mem>>) -> Cpu {
         let registers = Registers {
             a: 0x01,
             b: 0x00,
@@ -228,41 +211,44 @@ impl Cpu {
             stack_pointer: 0xFFFE,
             program_counter: 0x0100,
         };
-        let memory = Bus { memory: mem };
+        // let memory = Mem::setup(cartrigde_mem);
+        // let memory = Bus { memory: mem };
         return Cpu {
             registers,
             program_counter: 0x0100,
             memory,
             halted: false,
-            interrupts_enabled: false,
+            interrupts_enabled: true,
         };
     }
-    pub fn log(self) {
+
+    pub fn log(&mut self) {
         // A:00 F:11 B:22 C:33 D:44 E:55 H:66 L:77 SP:8888 PC:9999 PCMEM:AA,BB,CC,DD
+        let pcmem1 = self.memory.borrow().read_byte(self.program_counter);
+        let pcmem2 = self.memory.borrow().read_byte(self.program_counter + 1);
+        let pcmem3 = self.memory.borrow_mut().read_byte(self.program_counter + 2);
+        let pcmem4 = self.memory.borrow_mut().read_byte(self.program_counter + 3);
         println!("A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
             self.registers.a,self.registers.f.to_u8(), self.registers.b, self.registers.c,  self.registers.d, self.registers.e, self.registers.h,self.registers.l,
-            self.registers.stack_pointer,self.program_counter, self.memory.read_byte(self.program_counter),
-            self.memory.read_byte(self.program_counter+1),self.memory.read_byte(self.program_counter+2), self.memory.read_byte(self.program_counter+3));
+            self.registers.stack_pointer,self.program_counter, pcmem1,pcmem2,pcmem3,pcmem4);
     }
 
     pub fn set_thingy(&mut self) {
-        self.memory.write_byte(0xFF44, 0x90);
+        self.memory.borrow_mut().write_byte(0xFF44, 0x91);
     }
     fn handle_interrupt(&mut self) {
-        // println!("Handling interrupt");
-        // info!("Handling interrupt");
         if !self.interrupts_enabled && !self.halted {
             return;
         };
-        let interrupt_enable = self.memory.read_byte(0xFFFF);
-        let interrupt_flag = self.memory.read_byte(0xFF0F);
+        let interrupt_enable = self.memory.borrow().read_byte(0xFFFF);
+        let interrupt_flag = self.memory.borrow().read_byte(0xFF0F);
         let interrupts = interrupt_flag & interrupt_enable;
         if interrupts == 0x00 {
             return;
         }
         let interrupt_index = interrupts.trailing_zeros();
         let new_flag = interrupt_flag & !(1 << interrupt_index);
-        self.memory.write_byte(0xFF0F, new_flag);
+        self.memory.borrow_mut().write_byte(0xFF0F, new_flag);
         self.interrupts_enabled = false;
         self.halted = false;
         // info!("calling {}", interrupt_index as u16 * 8);
@@ -296,14 +282,17 @@ impl Cpu {
                 hl
             }
         };
-        self.memory.write_byte(address, self.registers.a);
+        self.memory
+            .borrow_mut()
+            .write_byte(address, self.registers.a);
     }
     // ld imm16, sp
     fn ld_imm16_ptr_sp(&mut self) {
-        let imm16 = self.memory.read_word(self.program_counter + 1);
+        let imm16 = self.memory.borrow().read_word(self.program_counter + 1);
         self.memory
+            .borrow_mut()
             .write_byte(imm16, self.registers.stack_pointer as u8);
-        self.memory.write_byte(
+        self.memory.borrow_mut().write_byte(
             imm16.wrapping_add(1),
             (self.registers.stack_pointer >> 8) as u8,
         );
@@ -324,7 +313,7 @@ impl Cpu {
                 hl
             }
         };
-        self.registers.a = self.memory.read_byte(address);
+        self.registers.a = self.memory.borrow().read_byte(address);
     }
 
     fn inc_r16(&mut self, register: R16) {
@@ -381,7 +370,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         match target {
@@ -391,7 +380,10 @@ impl Cpu {
             R8::E => self.registers.e = value,
             R8::H => self.registers.h = value,
             R8::L => self.registers.l = value,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), value),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), value),
             R8::A => self.registers.a = value,
         };
     }
@@ -496,9 +488,9 @@ impl Cpu {
             R8::L => self.registers.l = self.add_and_set_flags(self.registers.l, 1, false, true),
             R8::HL_PTR => {
                 let address = self.registers.get_hl();
-                let value = self.memory.read_byte(address);
+                let value = self.memory.borrow().read_byte(address);
                 let result = self.add_and_set_flags(value, 1, false, true);
-                self.memory.write_byte(address, result);
+                self.memory.borrow_mut().write_byte(address, result);
             }
             R8::A => self.registers.a = self.add_and_set_flags(self.registers.a, 1, false, true),
         };
@@ -513,16 +505,16 @@ impl Cpu {
             R8::L => self.registers.l = self.sub_and_set_flags(self.registers.l, 1, false, true),
             R8::HL_PTR => {
                 let address = self.registers.get_hl();
-                let value = self.memory.read_byte(address);
+                let value = self.memory.borrow().read_byte(address);
                 let result = self.sub_and_set_flags(value, 1, false, true);
-                self.memory.write_byte(address, result);
+                self.memory.borrow_mut().write_byte(address, result);
             }
             R8::A => self.registers.a = self.sub_and_set_flags(self.registers.a, 1, false, true),
         };
     }
 
     fn ld_r8_imm8(&mut self, register: R8) {
-        let imm8 = self.memory.read_byte(self.program_counter + 1);
+        let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
         match register {
             R8::B => self.registers.b = imm8,
             R8::C => self.registers.c = imm8,
@@ -532,7 +524,7 @@ impl Cpu {
             R8::L => self.registers.l = imm8,
             R8::HL_PTR => {
                 let address = self.registers.get_hl();
-                self.memory.write_byte(address, imm8);
+                self.memory.borrow_mut().write_byte(address, imm8);
             }
             R8::A => self.registers.a = imm8,
         }
@@ -547,7 +539,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let carry = value & 0x80 == 0x80;
@@ -563,7 +555,10 @@ impl Cpu {
             R8::E => self.registers.e = rotated,
             R8::H => self.registers.h = rotated,
             R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), rotated),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), rotated),
             R8::A => self.registers.a = rotated,
         };
     }
@@ -577,7 +572,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let carry = value & 0x80 == 0x80;
@@ -593,7 +588,10 @@ impl Cpu {
             R8::E => self.registers.e = rotated,
             R8::H => self.registers.h = rotated,
             R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), rotated),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), rotated),
             R8::A => self.registers.a = rotated,
         };
     }
@@ -607,7 +605,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let carry = value & 0x01 == 0x01;
@@ -626,7 +624,10 @@ impl Cpu {
             R8::E => self.registers.e = rotated,
             R8::H => self.registers.h = rotated,
             R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), rotated),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), rotated),
             R8::A => self.registers.a = rotated,
         };
     }
@@ -640,7 +641,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let carry = value & 0x01 == 0x01;
@@ -656,7 +657,10 @@ impl Cpu {
             R8::E => self.registers.e = rotated,
             R8::H => self.registers.h = rotated,
             R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), rotated),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), rotated),
             R8::A => self.registers.a = rotated,
         };
     }
@@ -708,7 +712,7 @@ impl Cpu {
 
     // jump relative
     fn jr_imm8(&mut self) {
-        let offset = self.memory.read_byte(self.program_counter + 1);
+        let offset = self.memory.borrow().read_byte(self.program_counter + 1);
         let n = offset as i8;
         self.program_counter = (((self.program_counter + 2) as u16) as i16 + n as i16) as u16;
     }
@@ -731,9 +735,11 @@ impl Cpu {
     fn push(&mut self, value: u16) {
         self.registers.stack_pointer = self.registers.stack_pointer.wrapping_sub(1);
         self.memory
+            .borrow_mut()
             .write_byte(self.registers.stack_pointer, ((value & 0xFF00) >> 8) as u8);
         self.registers.stack_pointer = self.registers.stack_pointer.wrapping_sub(1);
         self.memory
+            .borrow_mut()
             .write_byte(self.registers.stack_pointer, (value & 0xFF) as u8);
     }
 
@@ -749,9 +755,9 @@ impl Cpu {
 
     // does this need to take registe?
     fn pop(&mut self) -> u16 {
-        let lower_byte = self.memory.read_byte(self.registers.stack_pointer) as u16;
+        let lower_byte = self.memory.borrow().read_byte(self.registers.stack_pointer) as u16;
         self.registers.stack_pointer = self.registers.stack_pointer.wrapping_add(1);
-        let higher_byte = self.memory.read_byte(self.registers.stack_pointer) as u16;
+        let higher_byte = self.memory.borrow().read_byte(self.registers.stack_pointer) as u16;
         self.registers.stack_pointer = self.registers.stack_pointer.wrapping_add(1);
         return (higher_byte << 8) | lower_byte;
     }
@@ -787,12 +793,12 @@ impl Cpu {
     // enable interrupt flag which is located at FFFF
     fn ei(&mut self) {
         self.interrupts_enabled = true;
-        // self.memory.write_byte(0xFFFF, 1);
+        // self.memory.borrow_mut().write_byte(0xFFFF, 1);
     }
 
     fn di(&mut self) {
         self.interrupts_enabled = false;
-        // self.memory.write_byte(0xFFFF, 0);
+        // self.memory.borrow_mut().write_byte(0xFFFF, 0);
     }
 
     fn reti(&mut self) {
@@ -843,28 +849,35 @@ impl Cpu {
 
     fn ldh_cptr_a(&mut self) {
         self.memory
+            .borrow_mut()
             .write_byte(0xFF00 + self.registers.c as u16, self.registers.a);
     }
 
     fn ldh_imm8addr_a(&mut self, offset: u8) {
         self.memory
+            .borrow_mut()
             .write_byte(0xFF00 + offset as u16, self.registers.a);
     }
 
     fn ld_imm16addr_a(&mut self, address: u16) {
-        self.memory.write_byte(address, self.registers.a);
+        self.memory
+            .borrow_mut()
+            .write_byte(address, self.registers.a);
     }
 
     fn ldh_a_caddr(&mut self) {
-        self.registers.a = self.memory.read_byte(0xFF00 + self.registers.c as u16);
+        self.registers.a = self
+            .memory
+            .borrow()
+            .read_byte(0xFF00 + self.registers.c as u16);
     }
 
     fn ldh_a_imm8addr(&mut self, offset: u8) {
-        self.registers.a = self.memory.read_byte(0xFF00 | offset as u16);
+        self.registers.a = self.memory.borrow().read_byte((0xFF00 | offset as u16));
     }
 
     fn ld_a_imm16addr(&mut self, address: u16) {
-        self.registers.a = self.memory.read_byte(address);
+        self.registers.a = self.memory.borrow().read_byte(address);
     }
 
     // add signed
@@ -907,7 +920,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let c = value & 0x01 == 0x01;
@@ -924,7 +937,10 @@ impl Cpu {
             R8::E => self.registers.e = shifted,
             R8::H => self.registers.h = shifted,
             R8::L => self.registers.l = shifted,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), shifted),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), shifted),
             R8::A => self.registers.a = shifted,
         };
     }
@@ -937,7 +953,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let c = value & 0x80 == 0x80;
@@ -954,7 +970,10 @@ impl Cpu {
             R8::E => self.registers.e = shifted,
             R8::H => self.registers.h = shifted,
             R8::L => self.registers.l = shifted,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), shifted),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), shifted),
             R8::A => self.registers.a = shifted,
         };
     }
@@ -967,7 +986,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let c = value & 0x01 == 0x01;
@@ -983,7 +1002,10 @@ impl Cpu {
             R8::E => self.registers.e = shifted,
             R8::H => self.registers.h = shifted,
             R8::L => self.registers.l = shifted,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), shifted),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), shifted),
             R8::A => self.registers.a = shifted,
         };
     }
@@ -996,7 +1018,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let higher_bits = value & 0xF0;
@@ -1013,7 +1035,10 @@ impl Cpu {
             R8::E => self.registers.e = result,
             R8::H => self.registers.h = result,
             R8::L => self.registers.l = result,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), result),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), result),
             R8::A => self.registers.a = result,
         };
     }
@@ -1026,7 +1051,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let t = (value >> index) & 0x01 == 0x01;
@@ -1043,7 +1068,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = value | (0x01 << index);
@@ -1054,7 +1079,10 @@ impl Cpu {
             R8::E => self.registers.e = result,
             R8::H => self.registers.h = result,
             R8::L => self.registers.l = result,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), result),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), result),
             R8::A => self.registers.a = result,
         };
     }
@@ -1067,7 +1095,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = value & !(0x01 << index);
@@ -1078,7 +1106,10 @@ impl Cpu {
             R8::E => self.registers.e = result,
             R8::H => self.registers.h = result,
             R8::L => self.registers.l = result,
-            R8::HL_PTR => self.memory.write_byte(self.registers.get_hl(), result),
+            R8::HL_PTR => self
+                .memory
+                .borrow_mut()
+                .write_byte(self.registers.get_hl(), result),
             R8::A => self.registers.a = result,
         };
     }
@@ -1099,7 +1130,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.add_and_set_flags(self.registers.a, value, true, true);
@@ -1114,7 +1145,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.adc_and_set_flags(self.registers.a, value);
@@ -1129,7 +1160,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.sub_and_set_flags(self.registers.a, value, true, true);
@@ -1143,7 +1174,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.sbc_and_set_flags(self.registers.a, value);
@@ -1157,7 +1188,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.and_and_set_flags(self.registers.a, value);
@@ -1171,7 +1202,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.or_and_set_flags(self.registers.a, value);
@@ -1185,7 +1216,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.xor_and_set_flags(self.registers.a, value);
@@ -1199,7 +1230,7 @@ impl Cpu {
             R8::E => self.registers.e,
             R8::H => self.registers.h,
             R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.read_byte(self.registers.get_hl()),
+            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
             R8::A => self.registers.a,
         };
         let result = self.cp_and_set_flags(self.registers.a, value);
@@ -1238,7 +1269,7 @@ impl Cpu {
 
             // ld r16, imm16
             0x01 | 0x11 | 0x21 | 0x31 => {
-                let imm16 = self.memory.read_word(self.program_counter + 1);
+                let imm16 = self.memory.borrow().read_word(self.program_counter + 1);
                 self.ld_r16_imm16(R16::from_masked_u8(byte, R16Block1).unwrap(), imm16);
                 self.program_counter += 3;
             }
@@ -1455,55 +1486,55 @@ impl Cpu {
             // ---------------------------------- Block 4 ----------------------------------
             // add a, imm8
             0xC6 => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.add_and_set_flags(self.registers.a, value, true, true);
                 self.registers.a = result;
                 self.program_counter += 2;
             }
             // adc a, imm8
             0xCE => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.adc_and_set_flags(self.registers.a, value);
                 self.registers.a = result;
                 self.program_counter += 2;
             }
             // sub a, imm8
             0xD6 => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.sub_and_set_flags(self.registers.a, value, true, true);
                 self.registers.a = result;
                 self.program_counter += 2;
             }
             // sbc a, imm8
             0xDE => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.sbc_and_set_flags(self.registers.a, value);
                 self.registers.a = result;
                 self.program_counter += 2;
             }
             // and a, imm8
             0xE6 => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.and_and_set_flags(self.registers.a, value);
                 self.registers.a = result;
                 self.program_counter += 2;
             }
             // xor a, imm8
             0xEE => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.xor_and_set_flags(self.registers.a, value);
                 self.registers.a = result;
                 self.program_counter += 2;
             }
             // or a, imm8
             0xF6 => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.or_and_set_flags(self.registers.a, value);
                 self.registers.a = result;
                 self.program_counter += 2;
             }
             0xFE => {
-                let value = self.memory.read_byte(self.program_counter + 1);
+                let value = self.memory.borrow().read_byte(self.program_counter + 1);
                 self.cp_and_set_flags(self.registers.a, value);
                 self.program_counter += 2;
             }
@@ -1535,8 +1566,8 @@ impl Cpu {
             //               Condition::from_masked_u8(opcode, ParamMasks::CondBlock4.get_mask()).unwrap(),
             //         )),
             {
-                let address = self.memory.read_word(self.program_counter + 1);
-                self.program_counter += 2;
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 3;
                 self.jp_cond(
                     address,
                     Condition::from_masked_u8(byte, CondBlock4).unwrap(),
@@ -1546,8 +1577,8 @@ impl Cpu {
             0xC3 =>
             //Some(Operation::JpImm16),
             {
-                let address = self.memory.read_word(self.program_counter + 1);
-                self.program_counter += 2;
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 3;
                 self.jp(address);
             }
 
@@ -1562,8 +1593,8 @@ impl Cpu {
             //    Condition::from_masked_u8(opcode, ParamMasks::CondBlock4.get_mask()).unwrap(),
             //)),
             {
-                let address = self.memory.read_word(self.program_counter + 1);
-                self.program_counter += 2;
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 3;
                 self.call_cond(
                     address,
                     Condition::from_masked_u8(byte, CondBlock4).unwrap(),
@@ -1573,8 +1604,8 @@ impl Cpu {
             0xCD =>
             //Some(Operation::CallImm16),
             {
-                let address = self.memory.read_word(self.program_counter + 1);
-                self.program_counter += 2;
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 3;
                 self.call(address);
             }
             // RstTgt3,
@@ -1613,7 +1644,7 @@ impl Cpu {
             0xE0 =>
             //Some(Operation::LdhImm8AddrA),
             {
-                let offset = self.memory.read_byte(self.program_counter + 1);
+                let offset = self.memory.borrow().read_byte(self.program_counter + 1);
                 self.ldh_imm8addr_a(offset);
                 self.program_counter += 2;
             }
@@ -1621,7 +1652,7 @@ impl Cpu {
             0xEA =>
             //Some(Operation::LdImm16AddrA),
             {
-                let address = self.memory.read_word(self.program_counter + 1);
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
                 self.ld_imm16addr_a(address);
                 self.program_counter += 3;
             }
@@ -1636,7 +1667,7 @@ impl Cpu {
             0xF0 =>
             //Some(Operation::LdhAImm8Addr),
             {
-                let offset = self.memory.read_byte(self.program_counter + 1);
+                let offset = self.memory.borrow().read_byte(self.program_counter + 1);
                 self.ldh_a_imm8addr(offset);
                 self.program_counter += 2;
             }
@@ -1644,7 +1675,7 @@ impl Cpu {
             0xFA =>
             //Some(Operation::LdAImm16Addr),
             {
-                let address = self.memory.read_word(self.program_counter + 1);
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
                 self.ld_a_imm16addr(address);
                 self.program_counter += 3;
             }
@@ -1652,7 +1683,7 @@ impl Cpu {
             0xE8 =>
             //Some(Operation::AddSpImm8),
             {
-                let imm8 = self.memory.read_byte(self.program_counter + 1);
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
                 self.registers.stack_pointer = self.add_sp_imm8(imm8);
                 self.program_counter += 2;
             }
@@ -1660,7 +1691,7 @@ impl Cpu {
             0xF8 =>
             //Some(Operation::LdHlSpImm8),
             {
-                let imm8 = self.memory.read_byte(self.program_counter + 1);
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
                 let result = self.add_sp_imm8(imm8);
                 self.registers.set_hl(result);
                 // self.ld_hl_sp_plus_imm8(imm8);
@@ -1694,7 +1725,7 @@ impl Cpu {
             0xCB =>
             //Some(Operation::CbOperation(CbOperation::RlR8(R8::A))),
             {
-                let prefixed = self.memory.read_byte(self.program_counter + 1);
+                let prefixed = self.memory.borrow().read_byte(self.program_counter + 1);
                 match prefixed {
                     0x0 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07 => {
                         self.rlc(R8::from_masked_u8(prefixed, R8CB).unwrap());
@@ -1757,46 +1788,12 @@ impl Cpu {
     }
 
     pub fn next(&mut self) {
+        self.log();
         self.handle_interrupt();
         if !self.halted {
             // print!("not halted");
-            let current_byte = self.memory.read_byte(self.program_counter);
+            let current_byte = self.memory.borrow().read_byte(self.program_counter);
             self.execute_instruction(current_byte);
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::cpu::{Cpu, Flags, Registers};
-
-    // #[test]
-    // fn test1() {
-    //     let mut cpu = Cpu {
-    //         registers: Registers {
-    //             a: 0,
-    //             b: 0,
-    //             c: 0,
-    //             d: 0,
-    //             e: 0,
-    //             f: Flags {
-    //                 zero: false,
-    //                 substract: false,
-    //                 half_carry: false,
-    //                 carry: false,
-    //             },
-    //             h: 0,
-    //             l: 0,
-    //             stack_pointer: 0,
-    //             program_counter: 0,
-    //         },
-    //     };
-    //     cpu.add_a_u8(8);
-    //     assert_eq!(8, cpu.registers.a);
-    //     cpu.add_a_u8(255);
-    //     assert_eq!(7, cpu.registers.a);
-    //     assert_eq!(true, cpu.registers.f.carry);
-    //     cpu.adc_a_u8(8);
-    //     assert_eq!(16, cpu.registers.a);
-    // }
 }
