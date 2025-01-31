@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 const ROM_BANK_0_START: u16 = 0;
 const ROM_BANK_0_END: u16 = 0x3FFF;
 const ROM_BANK_N_START: u16 = 0x4000;
@@ -17,14 +19,11 @@ const HRAM_END: u16 = 0xFFFE;
 
 const ROM_BANK_SIZE: u16 = 16384;
 const RAM_BANK_SIZE: u16 = 8192;
-const KB16: u16 = 16384;
-//8 kib = 8192
 
 #[derive(Clone)]
 pub struct Mem {
     pub rom: Vec<u8>,
-    pub rom_bank_0_ptr: u16,
-    pub rom_bank_n_ptr: u16,
+    pub rom_bank_n_ptr: u32,
     pub ram_bank_n_ptr: u16,
     pub vram: [u8; 8192],
     pub cart_ram: [u8; 8192 * 3],
@@ -39,9 +38,8 @@ impl Mem {
     pub fn setup(cartridge: Vec<u8>) -> Self {
         let mut m = Mem {
             rom: cartridge,
-            rom_bank_0_ptr: 0,
-            rom_bank_n_ptr: ROM_BANK_SIZE as u16,
-            ram_bank_n_ptr: RAM_BANK_SIZE as u16,
+            rom_bank_n_ptr: 0,
+            ram_bank_n_ptr: 0,
             vram: [0; 8192],
             cart_ram: [0; 8192 * 3],
             wram: [0; 16384],
@@ -51,6 +49,10 @@ impl Mem {
             interrupt_enabled: 0,
         };
         m.boot_up();
+        let mapper_type = m.borrow().read_byte(0x0147);
+        let rom_size = m.borrow().read_byte(0x0148);
+        let ram_size = m.borrow().read_byte(0x0149);
+
         return m;
     }
 
@@ -88,7 +90,7 @@ impl Mem {
         self.write_byte(0xFF41, 0x85);
         self.write_byte(0xFF42, 0x00);
         self.write_byte(0xFF43, 0x00);
-        self.write_byte(0xFF44, 0x91);
+        self.write_byte(0xFF44, 0x00);
         self.write_byte(0xFF45, 0x00);
         self.write_byte(0xFF46, 0xFF);
         self.write_byte(0xFF47, 0xFC);
@@ -102,11 +104,11 @@ impl Mem {
         let val = match address {
             ROM_BANK_0_START..=ROM_BANK_0_END => self.rom[address as usize],
             ROM_BANK_N_START..=ROM_BANK_N_END => {
-                self.rom[(self.rom_bank_n_ptr + address - ROM_BANK_N_START) as usize]
+                self.rom[(self.rom_bank_n_ptr as u32 + address as u32) as usize]
             }
             VRAM_START..=VRAM_END => self.vram[(address - VRAM_START) as usize],
             RAM_BANK_START..=RAM_BANK_END => {
-                self.cart_ram[(self.ram_bank_n_ptr + address) as usize]
+                self.cart_ram[(self.ram_bank_n_ptr + address - RAM_BANK_START) as usize]
             }
             WRAM_START..=WRAM_END => self.wram[(address - WRAM_START) as usize],
             OAM_START..=OAM_END => self.oam[(address - OAM_START) as usize],
@@ -126,17 +128,13 @@ impl Mem {
         match address {
             0x2000..=0x3FFF => self.set_current_rom_bank(val),
             0x4000..=0x5FFF => self.set_current_ram_bank(val),
-            // latch or bank mode?
-            //0x6000..=0x7FFF => self.bank_mode += 1,
-            // 0x0..=0x3FFF => self.rom_bank0[address as usize],
-            // 0x4000..=0x7FFF => self.rom_bank1[address as usize],
             ROM_BANK_0_START..=ROM_BANK_0_END => self.rom[address as usize] = val,
             ROM_BANK_N_START..=ROM_BANK_N_END => {
-                self.rom[(self.rom_bank_n_ptr + address - ROM_BANK_N_START) as usize] = val
+                self.rom[(address as u32 + self.rom_bank_n_ptr) as usize] = val
             }
             VRAM_START..=VRAM_END => self.vram[(address - VRAM_START) as usize] = val,
             RAM_BANK_START..=RAM_BANK_END => {
-                self.cart_ram[(address - RAM_BANK_START) as usize] = val
+                self.cart_ram[(self.ram_bank_n_ptr + address - RAM_BANK_START) as usize] = val
             }
             WRAM_START..=WRAM_END => self.wram[(address - WRAM_START) as usize] = val,
             OAM_START..=OAM_END => self.oam[(address - OAM_START) as usize] = val,
@@ -151,15 +149,15 @@ impl Mem {
     pub fn set_current_rom_bank(&mut self, val: u8) {
         let n = val & 0x1F;
         match n {
-            0 => self.rom_bank_n_ptr = ROM_BANK_SIZE,
-            _ => self.rom_bank_n_ptr = n as u16 * ROM_BANK_SIZE,
+            0 => self.rom_bank_n_ptr = 0,
+            _ => self.rom_bank_n_ptr = (n - 1) as u32 * ROM_BANK_SIZE as u32,
         };
     }
     pub fn set_current_ram_bank(&mut self, val: u8) {
         let n = val & 0x1F;
         match n {
-            0 => self.ram_bank_n_ptr = RAM_BANK_SIZE,
-            _ => self.ram_bank_n_ptr = n as u16 * RAM_BANK_SIZE,
+            0 => self.ram_bank_n_ptr = 0,
+            _ => self.ram_bank_n_ptr = (n - 1) as u16 * RAM_BANK_SIZE,
         }
     }
 
