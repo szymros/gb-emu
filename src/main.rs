@@ -2,10 +2,9 @@ mod cpu;
 mod memory;
 mod ppu;
 use sdl2::pixels::PixelFormatEnum;
-use std::rc::Rc;
+use std::{rc::Rc, time::Instant};
 use std::cell::RefCell;
 use cpu::Cpu;
-use env_logger::Env;
 use memory::Mem;
 use ppu::Ppu;
 use sdl2::{
@@ -19,7 +18,6 @@ const WINDOW_HEIGHT: u32 = 432;
 const WINDOW_NAME: &str = "Rust SDL2";
 
 fn main() {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
     let rom = std::fs::read("./roms/pred.gb").unwrap();
 
     let mem = Rc::new(RefCell::new(Mem::setup(rom)));
@@ -38,7 +36,7 @@ fn main() {
     let texture_creator = canvas.texture_creator();
     let mut texture = texture_creator
         .create_texture(
-            PixelFormatEnum::RGB24,
+            PixelFormatEnum::RGB332,
             sdl2::render::TextureAccess::Streaming,
             160,
             144,
@@ -50,8 +48,6 @@ fn main() {
                 for x in 0..160 {
                     let offset = y * pitch + x;
                     buffer[offset] = 0x80;
-                    buffer[offset + 1] = 0x80;
-                    buffer[offset + 2] = 0x80;
                 }
             }
         })
@@ -61,8 +57,10 @@ fn main() {
         .copy(&texture, None, Rect::new(0, 0, 160 * 2, 144 * 2))
         .unwrap();
     canvas.present();
+
     let mut event_pump = sdl_context.event_pump().unwrap();
     'running: loop {
+        let now = Instant::now();
         cpu.cycles = 0;
         cpu.next();
 
@@ -70,12 +68,14 @@ fn main() {
         if let Some((ly, updated_line)) = pixels {
             texture
                 .with_lock(None, |buffer: &mut [u8], pitch: usize| {
-                    for x in 0..160 {
-                        let offset: u32 = ly as u32 * pitch as u32 + x * 3;
-                        buffer[offset as usize] = updated_line[x as usize];
-                        buffer[(offset + 1) as usize] = updated_line[x as usize];
-                        buffer[(offset + 2) as usize] = updated_line[x as usize];
-                    }
+                    let offset = ly as usize *pitch;
+                    buffer[offset..offset+160].copy_from_slice(&updated_line);
+                    //for x in 0..160 {
+                    //    let offset: u32 = ly as u32 * pitch as u32 + x * 3;
+                    //    buffer[offset as usize] = updated_line[x as usize];
+                    //    buffer[(offset + 1) as usize] = updated_line[x as usize];
+                    //    buffer[(offset + 2) as usize] = updated_line[x as usize];
+                    //}
                 })
                 .unwrap();
             canvas
@@ -95,5 +95,7 @@ fn main() {
                 _ => {}
             }
         }
+    println!("elapsed time {}",now.elapsed().as_nanos());
+    //println!("elapsed time {}",now.elapsed().as_micros());
     }
 }

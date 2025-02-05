@@ -1,23 +1,17 @@
 use crate::memory::Mem;
-use std::{cell::RefCell, rc::Rc , u16, u8};
+use std::{cell::RefCell, rc::Rc, u16, u8};
 
 const ZERO_FLAG_BYTE_POSITION: u8 = 7;
 const SUBTRACT_FLAG_BYTE_POSITION: u8 = 6;
 const HALF_CARRY_FLAG_BYTE_POSITION: u8 = 5;
 const CARRY_FLAG_BYTE_POSITION: u8 = 4;
 
-const ARITHMETIC_MASK: u8 = 0b111;
 const LD_R8_R8_SRC_MASK: u8 = 0b111;
 const LD_R8_R8_DST_MASK: u8 = 0b111000;
 const R16_BLOCK1_MASK: u8 = 0b110000;
-const R8_BLOCK1_MASK: u8 = 0b111000;
-const COND_BLOCK1_MASK: u8 = 0b00011000;
-const COND_BLOCK4_MASK: u8 = 0b00011000;
 const R8CB_MASK: u8 = 0b111;
 const BIT3CB_MASK: u8 = 0b111000;
 const TGT3_MASK: u8 = 0b00111000;
-const R16STK_BLOCK4_MASK: u8 = 0b00110000;
-
 
 #[derive(Copy, Clone)]
 pub struct Registers {
@@ -57,15 +51,15 @@ impl Registers {
         self.l = (value) as u8;
     }
 
-    fn get_af(&mut self) -> u16 {
+    fn get_af(&self) -> u16 {
         return (self.a as u16) << 8 | self.f.to_u8() as u16;
     }
     fn set_af(&mut self, value: u16) {
         self.a = (value >> 8) as u8;
-        self.f.zero = value as u8 & 0b10000000 == 0b10000000;
-        self.f.substract = value as u8 & 0b01000000 == 0b01000000;
-        self.f.half_carry = value as u8 & 0b00100000 == 0b00100000;
-        self.f.carry = value as u8 & 0b00010000 == 0b00010000;
+        self.f.zero = value as u8 & 0x80 == 0x80;
+        self.f.substract = value as u8 & 0x40 == 0x40;
+        self.f.half_carry = value as u8 & 0x20 == 0x20;
+        self.f.carry = value as u8 & 0x10 == 0x10;
     }
 }
 
@@ -121,24 +115,6 @@ impl R8 {
     }
 }
 #[derive(Copy, Clone)]
-enum R16Mem {
-    BC = 0,
-    DE = 1,
-    HLI = 2,
-    HLD = 3,
-}
-impl R16Mem {
-    fn from_masked_u8(byte: u8, mask: u8) -> Option<Self> {
-        match (byte & mask) >> mask.trailing_zeros() {
-            0 => Some(R16Mem::BC),
-            1 => Some(R16Mem::DE),
-            2 => Some(R16Mem::HLI),
-            3 => Some(R16Mem::HLD),
-            _ => None,
-        }
-    }
-}
-#[derive(Copy, Clone)]
 enum R16 {
     BC = 0,
     DE = 1,
@@ -155,47 +131,6 @@ impl R16 {
             _ => None,
         }
     }
-}
-
-enum Condition {
-    NotZero = 0,
-    Zero = 1,
-    NoCarry = 2,
-    Carry = 3,
-}
-impl Condition {
-    fn from_masked_u8(byte: u8, mask: u8) -> Option<Self> {
-        match (byte & mask) >> mask.trailing_zeros() {
-            0 => Some(Condition::NotZero),
-            1 => Some(Condition::Zero),
-            2 => Some(Condition::NoCarry),
-            3 => Some(Condition::Carry),
-            _ => None,
-        }
-    }
-}
-enum R16Stk {
-    BC = 0,
-    DE = 1,
-    HL = 2,
-    AF = 3,
-}
-impl R16Stk {
-    fn from_masked_u8(byte: u8, mask: u8) -> Option<Self> {
-        match (byte & mask) >> mask.trailing_zeros() {
-            0 => Some(R16Stk::BC),
-            1 => Some(R16Stk::DE),
-            2 => Some(R16Stk::HL),
-            3 => Some(R16Stk::AF),
-            _ => None,
-        }
-    }
-}
-enum LdParam {
-    R16(R16),
-    R16Mem(R16Mem),
-    Imm16,
-    SP,
 }
 
 pub struct Cpu {
@@ -251,7 +186,6 @@ impl Cpu {
         let interrupt_flag = self.memory.borrow().read_byte(0xFF0F);
         let interrupts = interrupt_flag & interrupt_enable;
         if interrupts == 0x00 {
-            self.cycles+=1;
             return;
         }
         let interrupt_index = interrupts.trailing_zeros();
@@ -262,34 +196,6 @@ impl Cpu {
         self.push(self.program_counter);
         self.program_counter = 0x40 + interrupt_index as u16 * 8;
         self.cycles += 5
-    }
-
-    fn ld_r16_imm16(&mut self, register: R16, imm16: u16) {
-        match register {
-            R16::BC => self.registers.set_bc(imm16),
-            R16::DE => self.registers.set_de(imm16),
-            R16::HL => self.registers.set_hl(imm16),
-            R16::SP => self.registers.stack_pointer = imm16,
-        }
-    }
-    fn ld_r16mem_a(&mut self, register: R16Mem) {
-        let address: u16 = match register {
-            R16Mem::BC => self.registers.get_bc(),
-            R16Mem::DE => self.registers.get_de(),
-            R16Mem::HLI => {
-                let hl = self.registers.get_hl();
-                self.registers.set_hl(hl.wrapping_add(1));
-                hl
-            }
-            R16Mem::HLD => {
-                let hl = self.registers.get_hl();
-                self.registers.set_hl(hl.wrapping_sub(1));
-                hl
-            }
-        };
-        self.memory
-            .borrow_mut()
-            .write_byte(address, self.registers.a);
     }
 
     fn ld_imm16_ptr_sp(&mut self) {
@@ -303,61 +209,7 @@ impl Cpu {
         );
     }
 
-    fn ld_a_r16mem(&mut self, register: R16Mem) {
-        let address = match register {
-            R16Mem::BC => self.registers.get_bc(),
-            R16Mem::DE => self.registers.get_de(),
-            R16Mem::HLI => {
-                let hl = self.registers.get_hl();
-                self.registers.set_hl(hl.wrapping_add(1));
-                hl
-            }
-            R16Mem::HLD => {
-                let hl = self.registers.get_hl();
-                self.registers.set_hl(hl.wrapping_sub(1));
-                hl
-            }
-        };
-        self.registers.a = self.memory.borrow().read_byte(address);
-    }
-
-    fn inc_r16(&mut self, register: R16) {
-        match register {
-            R16::BC => self
-                .registers
-                .set_bc(self.registers.get_bc().wrapping_add(1)),
-            R16::DE => self
-                .registers
-                .set_de(self.registers.get_de().wrapping_add(1)),
-            R16::HL => self
-                .registers
-                .set_hl(self.registers.get_hl().wrapping_add(1)),
-            R16::SP => self.registers.stack_pointer = self.registers.stack_pointer.wrapping_add(1),
-        }
-    }
-
-    fn dec_r16(&mut self, register: R16) {
-        match register {
-            R16::BC => self
-                .registers
-                .set_bc(self.registers.get_bc().wrapping_sub(1)),
-            R16::DE => self
-                .registers
-                .set_de(self.registers.get_de().wrapping_sub(1)),
-            R16::HL => self
-                .registers
-                .set_hl(self.registers.get_hl().wrapping_sub(1)),
-            R16::SP => self.registers.stack_pointer = self.registers.stack_pointer.wrapping_sub(1),
-        }
-    }
-
-    fn add_hl_r16(&mut self, register: R16) {
-        let r16_value = match register {
-            R16::BC => self.registers.get_bc(),
-            R16::DE => self.registers.get_de(),
-            R16::HL => self.registers.get_hl(),
-            R16::SP => self.registers.stack_pointer,
-        };
+    fn add_hl_r16(&mut self, r16_value: u16) {
         let hl_value = self.registers.get_hl();
         let (result, overflow) = hl_value.overflowing_add(r16_value);
         self.registers.f.substract = false;
@@ -422,7 +274,7 @@ impl Cpu {
         self.registers.f.zero = result == 0;
         self.registers.f.substract = true;
         if half_carry {
-            self.registers.f.half_carry = ((target & 0b1111) < (value & 0b1111));
+            self.registers.f.half_carry = (target & 0b1111) < (value & 0b1111);
         }
         if carry {
             self.registers.f.carry = overflow
@@ -467,197 +319,56 @@ impl Cpu {
         return result;
     }
 
-    fn cp_and_set_flags(&mut self, target: u8, value: u8) -> u8 {
+    fn cp_and_set_flags(&mut self, target: u8, value: u8) {
         let result = target.wrapping_sub(value);
         self.registers.f.zero = result == 0;
         self.registers.f.substract = true;
         self.registers.f.half_carry = (target & 0b1111) < value & 0b1111;
         self.registers.f.carry = value > target;
-        return result;
-    }
-
-    fn inc_r8(&mut self, register: R8) {
-        match register {
-            R8::B => self.registers.b = self.add_and_set_flags(self.registers.b, 1, false, true),
-            R8::C => self.registers.c = self.add_and_set_flags(self.registers.c, 1, false, true),
-            R8::D => self.registers.d = self.add_and_set_flags(self.registers.d, 1, false, true),
-            R8::E => self.registers.e = self.add_and_set_flags(self.registers.e, 1, false, true),
-            R8::H => self.registers.h = self.add_and_set_flags(self.registers.h, 1, false, true),
-            R8::L => self.registers.l = self.add_and_set_flags(self.registers.l, 1, false, true),
-            R8::HL_PTR => {
-                let address = self.registers.get_hl();
-                let value = self.memory.borrow().read_byte(address);
-                let result = self.add_and_set_flags(value, 1, false, true);
-                self.memory.borrow_mut().write_byte(address, result);
-            }
-            R8::A => self.registers.a = self.add_and_set_flags(self.registers.a, 1, false, true),
-        };
-    }
-    fn dec_r8(&mut self, register: R8) {
-        match register {
-            R8::B => self.registers.b = self.sub_and_set_flags(self.registers.b, 1, false, true),
-            R8::C => self.registers.c = self.sub_and_set_flags(self.registers.c, 1, false, true),
-            R8::D => self.registers.d = self.sub_and_set_flags(self.registers.d, 1, false, true),
-            R8::E => self.registers.e = self.sub_and_set_flags(self.registers.e, 1, false, true),
-            R8::H => self.registers.h = self.sub_and_set_flags(self.registers.h, 1, false, true),
-            R8::L => self.registers.l = self.sub_and_set_flags(self.registers.l, 1, false, true),
-            R8::HL_PTR => {
-                let address = self.registers.get_hl();
-                let value = self.memory.borrow().read_byte(address);
-                let result = self.sub_and_set_flags(value, 1, false, true);
-                self.memory.borrow_mut().write_byte(address, result);
-            }
-            R8::A => self.registers.a = self.sub_and_set_flags(self.registers.a, 1, false, true),
-        };
-    }
-
-    fn ld_r8_imm8(&mut self, register: R8) {
-        let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
-        match register {
-            R8::B => self.registers.b = imm8,
-            R8::C => self.registers.c = imm8,
-            R8::D => self.registers.d = imm8,
-            R8::E => self.registers.e = imm8,
-            R8::H => self.registers.h = imm8,
-            R8::L => self.registers.l = imm8,
-            R8::HL_PTR => {
-                let address = self.registers.get_hl();
-                self.memory.borrow_mut().write_byte(address, imm8);
-            }
-            R8::A => self.registers.a = imm8,
-        }
     }
 
     // rotate left
-    fn rl(&mut self, from_register: R8, to_register: R8) {
-        let value = match from_register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn rl(&mut self, value: u8) -> u8 {
         let new_carry = value & 0x80 == 0x80;
         let rotated = (value << 1) | (if self.registers.f.carry { 1 } else { 0 });
         self.registers.f.carry = new_carry;
         self.registers.f.zero = rotated == 0;
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
-        match to_register {
-            R8::B => self.registers.b = rotated,
-            R8::C => self.registers.c = rotated,
-            R8::D => self.registers.d = rotated,
-            R8::E => self.registers.e = rotated,
-            R8::H => self.registers.h = rotated,
-            R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), rotated),
-            R8::A => self.registers.a = rotated,
-        };
+        return rotated;
     }
 
     // rotate left circular
-    fn rlc(&mut self, from_register: R8, to_register: R8) {
-        let value = match from_register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn rlc(&mut self, value: u8) -> u8 {
         let new_carry = value & 0x80 == 0x80;
         let rotated = (value << 1) | (if new_carry { 1 } else { 0 });
         self.registers.f.carry = new_carry;
         self.registers.f.zero = rotated == 0;
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
-        match to_register {
-            R8::B => self.registers.b = rotated,
-            R8::C => self.registers.c = rotated,
-            R8::D => self.registers.d = rotated,
-            R8::E => self.registers.e = rotated,
-            R8::H => self.registers.h = rotated,
-            R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), rotated),
-            R8::A => self.registers.a = rotated,
-        };
+        return rotated;
     }
 
     // rotate right
-    fn rr(&mut self, from_register: R8, to_register: R8) {
-        let value = match from_register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn rr(&mut self, value: u8) -> u8 {
         let carry = value & 0x01 == 0x01;
         let rotated = (value >> 1) | (if self.registers.f.carry { 0x80 } else { 0 });
         self.registers.f.carry = carry;
         self.registers.f.zero = rotated == 0;
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
-        match to_register {
-            R8::B => self.registers.b = rotated,
-            R8::C => self.registers.c = rotated,
-            R8::D => self.registers.d = rotated,
-            R8::E => self.registers.e = rotated,
-            R8::H => self.registers.h = rotated,
-            R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), rotated),
-            R8::A => self.registers.a = rotated,
-        };
+        return rotated;
     }
 
     // rotate right circural
-    fn rrc(&mut self, from_register: R8, to_register: R8) {
-        let value = match from_register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn rrc(&mut self, value: u8) -> u8 {
         let carry = value & 0x01 == 0x01;
         let rotated = (value >> 1) | (if carry { 0x80 } else { 0 });
         self.registers.f.carry = carry;
         self.registers.f.zero = rotated == 0;
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
-        match to_register {
-            R8::B => self.registers.b = rotated,
-            R8::C => self.registers.c = rotated,
-            R8::D => self.registers.d = rotated,
-            R8::E => self.registers.e = rotated,
-            R8::H => self.registers.h = rotated,
-            R8::L => self.registers.l = rotated,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), rotated),
-            R8::A => self.registers.a = rotated,
-        };
+        return rotated;
     }
 
     // adjust a to be binary decimal encoded
@@ -711,20 +422,6 @@ impl Cpu {
         self.program_counter = (((self.program_counter + 2) as u16) as i16 + n as i16) as u16;
     }
 
-    fn jr_imm8_cond(&mut self, cond: Condition) {
-        let c = match cond {
-            Condition::NotZero => self.registers.f.zero == false,
-            Condition::Zero => self.registers.f.zero == true,
-            Condition::NoCarry => self.registers.f.carry == false,
-            Condition::Carry => self.registers.f.carry == true,
-        };
-        if c {
-            self.jr_imm8();
-        } else {
-            self.program_counter += 2;
-        }
-    }
-
     fn push(&mut self, value: u16) {
         self.registers.stack_pointer = self.registers.stack_pointer.wrapping_sub(1);
         self.memory
@@ -736,16 +433,6 @@ impl Cpu {
             .write_byte(self.registers.stack_pointer, (value & 0xFF) as u8);
     }
 
-    fn push_r16(&mut self, register: R16Stk) {
-        let value = match register {
-            R16Stk::BC => self.registers.get_bc(),
-            R16Stk::DE => self.registers.get_de(),
-            R16Stk::HL => self.registers.get_hl(),
-            R16Stk::AF => self.registers.get_af(),
-        };
-        self.push(value);
-    }
-
     fn pop(&mut self) -> u16 {
         let lower_byte = self.memory.borrow().read_byte(self.registers.stack_pointer) as u16;
         self.registers.stack_pointer = self.registers.stack_pointer.wrapping_add(1);
@@ -754,33 +441,9 @@ impl Cpu {
         return (higher_byte << 8) | lower_byte;
     }
 
-    fn pop_r16(&mut self, register: R16Stk) {
-        let value = self.pop();
-        match register {
-            R16Stk::BC => self.registers.set_bc(value),
-            R16Stk::DE => self.registers.set_de(value),
-            R16Stk::HL => self.registers.set_hl(value),
-            R16Stk::AF => self.registers.set_af(value),
-        };
-    }
-
     fn ret(&mut self) {
         let program_counter = self.pop();
         self.program_counter = program_counter;
-    }
-
-    fn ret_cond(&mut self, cond: Condition) {
-        let c = match cond {
-            Condition::NotZero => self.registers.f.zero == false,
-            Condition::Zero => self.registers.f.zero == true,
-            Condition::NoCarry => self.registers.f.carry == false,
-            Condition::Carry => self.registers.f.carry == true,
-        };
-        if c {
-            self.ret()
-        } else {
-            self.program_counter += 1;
-        }
     }
 
     fn ei(&mut self) {
@@ -793,83 +456,13 @@ impl Cpu {
         self.memory.borrow_mut().interrupt_enabled = 0;
     }
 
-    fn reti(&mut self) {
-        self.ei();
-        self.ret();
-    }
-
     fn jp(&mut self, address: u16) {
         self.program_counter = address;
-    }
-
-    fn jp_cond(&mut self, address: u16, cond: Condition) {
-        let c = match cond {
-            Condition::NotZero => self.registers.f.zero == false,
-            Condition::Zero => self.registers.f.zero == true,
-            Condition::NoCarry => self.registers.f.carry == false,
-            Condition::Carry => self.registers.f.carry == true,
-        };
-        if c {
-            self.jp(address);
-        } else {
-            self.program_counter += 1;
-        }
     }
 
     fn call(&mut self, address: u16) {
         self.push(self.program_counter + 1);
         self.jp(address);
-    }
-
-    fn call_cond(&mut self, address: u16, cond: Condition) {
-        let c = match cond {
-            Condition::NotZero => self.registers.f.zero == false,
-            Condition::Zero => self.registers.f.zero == true,
-            Condition::NoCarry => self.registers.f.carry == false,
-            Condition::Carry => self.registers.f.carry == true,
-        };
-        if c {
-            self.call(address);
-        } else {
-            self.program_counter += 1;
-        }
-    }
-
-    fn rst_tgt3(&mut self, address: u8) {
-        self.call(address as u16 * 8);
-    }
-
-    fn ldh_cptr_a(&mut self) {
-        self.memory
-            .borrow_mut()
-            .write_byte(0xFF00 + self.registers.c as u16, self.registers.a);
-    }
-
-    fn ldh_imm8addr_a(&mut self, offset: u8) {
-        self.memory
-            .borrow_mut()
-            .write_byte(0xFF00 + offset as u16, self.registers.a);
-    }
-
-    fn ld_imm16addr_a(&mut self, address: u16) {
-        self.memory
-            .borrow_mut()
-            .write_byte(address, self.registers.a);
-    }
-
-    fn ldh_a_caddr(&mut self) {
-        self.registers.a = self
-            .memory
-            .borrow()
-            .read_byte(0xFF00 + self.registers.c as u16);
-    }
-
-    fn ldh_a_imm8addr(&mut self, offset: u8) {
-        self.registers.a = self.memory.borrow().read_byte(0xFF00 | offset as u16);
-    }
-
-    fn ld_a_imm16addr(&mut self, address: u16) {
-        self.registers.a = self.memory.borrow().read_byte(address);
     }
 
     fn add_sp_imm8(&mut self, imm8: u8) -> u16 {
@@ -883,128 +476,37 @@ impl Cpu {
         return result;
     }
 
-    fn ld_hl_sp_plus_imm8(&mut self, imm8: u8) {
-        let target = self.registers.stack_pointer;
-        let (result, overflow) = (target as i16).overflowing_add(imm8 as i16);
-        self.registers.f.zero = false;
-        self.registers.f.substract = false;
-        self.registers.f.carry = overflow;
-        self.registers.f.half_carry =
-            ((target as i16 & 0xFFF) + (result as i16 & 0xFFF)) & 0x1000 == 0x1000;
-        self.registers.set_hl(result as u16);
-    }
-
-    fn ld_sp_hl(&mut self) {
-        self.registers.stack_pointer = self.registers.get_hl();
-    }
-
-    fn sra(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn sra(&mut self, value: u8) -> u8 {
         let c = value & 0x01 == 0x01;
         let shifted = ((value as i8) >> 1) as u8;
         self.registers.f.zero = shifted == 0;
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
         self.registers.f.carry = c;
-        match register {
-            R8::B => self.registers.b = shifted,
-            R8::C => self.registers.c = shifted,
-            R8::D => self.registers.d = shifted,
-            R8::E => self.registers.e = shifted,
-            R8::H => self.registers.h = shifted,
-            R8::L => self.registers.l = shifted,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), shifted),
-            R8::A => self.registers.a = shifted,
-        };
+        return shifted;
     }
 
-    fn sla(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn sla(&mut self, value: u8) -> u8 {
         let c = value & 0x80 == 0x80;
         let shifted = ((value as i8) << 1) as u8;
         self.registers.f.zero = shifted == 0;
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
         self.registers.f.carry = c;
-        match register {
-            R8::B => self.registers.b = shifted,
-            R8::C => self.registers.c = shifted,
-            R8::D => self.registers.d = shifted,
-            R8::E => self.registers.e = shifted,
-            R8::H => self.registers.h = shifted,
-            R8::L => self.registers.l = shifted,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), shifted),
-            R8::A => self.registers.a = shifted,
-        };
+        return shifted;
     }
 
-    fn srl(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn srl(&mut self, value: u8) -> u8 {
         let c = value & 0x01 == 0x01;
         let shifted = value >> 1;
         self.registers.f.zero = shifted == 0;
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
         self.registers.f.carry = c;
-        match register {
-            R8::B => self.registers.b = shifted,
-            R8::C => self.registers.c = shifted,
-            R8::D => self.registers.d = shifted,
-            R8::E => self.registers.e = shifted,
-            R8::H => self.registers.h = shifted,
-            R8::L => self.registers.l = shifted,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), shifted),
-            R8::A => self.registers.a = shifted,
-        };
+        return shifted;
     }
 
-    fn swap(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
+    fn swap(&mut self, value: u8) -> u8 {
         let higher_bits = value >> 4;
         let lower_bits = value << 4;
         let result = higher_bits | lower_bits;
@@ -1012,19 +514,7 @@ impl Cpu {
         self.registers.f.substract = false;
         self.registers.f.half_carry = false;
         self.registers.f.carry = false;
-        match register {
-            R8::B => self.registers.b = result,
-            R8::C => self.registers.c = result,
-            R8::D => self.registers.d = result,
-            R8::E => self.registers.e = result,
-            R8::H => self.registers.h = result,
-            R8::L => self.registers.l = result,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), result),
-            R8::A => self.registers.a = result,
-        };
+        return result;
     }
 
     fn bit(&mut self, register: R8, index: u8) {
@@ -1098,120 +588,6 @@ impl Cpu {
         };
     }
 
-    fn add_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.add_and_set_flags(self.registers.a, value, true, true);
-        self.registers.a = result;
-    }
-
-    fn adc_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.adc_and_set_flags(self.registers.a, value);
-        self.registers.a = result;
-    }
-
-    fn sub_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.sub_and_set_flags(self.registers.a, value, true, true);
-        self.registers.a = result;
-    }
-    fn sbc_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.sbc_and_set_flags(self.registers.a, value);
-        self.registers.a = result;
-    }
-    fn and_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.and_and_set_flags(self.registers.a, value);
-        self.registers.a = result;
-    }
-    fn or_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.or_and_set_flags(self.registers.a, value);
-        self.registers.a = result;
-    }
-    fn xor_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.xor_and_set_flags(self.registers.a, value);
-        self.registers.a = result;
-    }
-    fn cp_a_r8(&mut self, register: R8) {
-        let value = match register {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        let result = self.cp_and_set_flags(self.registers.a, value);
-    }
-
     fn execute_instruction(&mut self, byte: u8) {
         match byte {
             //nop
@@ -1221,7 +597,7 @@ impl Cpu {
             }
             //stop
             0x10 => {
-                self.program_counter += 1;
+                self.program_counter += 2;
                 self.cycles += 1;
             }
             // halt
@@ -1234,22 +610,90 @@ impl Cpu {
             // ld dst, src
 
             // ld r16, imm16
-            0x01 | 0x11 | 0x21 | 0x31 => {
+            0x01 => {
                 let imm16 = self.memory.borrow().read_word(self.program_counter + 1);
-                self.ld_r16_imm16(R16::from_masked_u8(byte, R16_BLOCK1_MASK).unwrap(), imm16);
+                self.registers.set_bc(imm16);
+                self.program_counter += 3;
+                self.cycles += 3;
+            }
+            0x11 => {
+                let imm16 = self.memory.borrow().read_word(self.program_counter + 1);
+                self.registers.set_de(imm16);
+                self.program_counter += 3;
+                self.cycles += 3;
+            }
+            0x21 => {
+                let imm16 = self.memory.borrow().read_word(self.program_counter + 1);
+                self.registers.set_hl(imm16);
+                self.program_counter += 3;
+                self.cycles += 3;
+            }
+            0x31 => {
+                let imm16 = self.memory.borrow().read_word(self.program_counter + 1);
+                self.registers.stack_pointer = imm16;
                 self.program_counter += 3;
                 self.cycles += 3;
             }
             // ld r16mem, a
-            0x02 | 0x12 | 0x22 | 0x32 => {
-                self.ld_r16mem_a(R16Mem::from_masked_u8(byte, R16_BLOCK1_MASK).unwrap());
+            0x02 => {
+                let address = self.registers.get_bc();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x12 => {
+                let address = self.registers.get_de();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x22 => {
+                let address = self.registers.get_hl();
+                self.registers.set_hl(address.wrapping_add(1));
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x32 => {
+                let address = self.registers.get_hl();
+                self.registers.set_hl(address.wrapping_sub(1));
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.a);
                 self.program_counter += 1;
                 self.cycles += 2;
             }
 
             // ld a, r16mem
-            0x0A | 0x1A | 0x2A | 0x3A => {
-                self.ld_a_r16mem(R16Mem::from_masked_u8(byte, R16_BLOCK1_MASK).unwrap());
+            0x0A => {
+                let address = self.registers.get_bc();
+                self.registers.a = self.memory.borrow().read_byte(address);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x1A => {
+                let address = self.registers.get_de();
+                self.registers.a = self.memory.borrow().read_byte(address);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x2A => {
+                let address = self.registers.get_hl();
+                self.registers.set_hl(address.wrapping_add(1));
+                self.registers.a = self.memory.borrow().read_byte(address);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x3A => {
+                let address = self.registers.get_hl();
+                self.registers.set_hl(address.wrapping_sub(1));
+                self.registers.a = self.memory.borrow().read_byte(address);
                 self.program_counter += 1;
                 self.cycles += 2;
             }
@@ -1262,53 +706,224 @@ impl Cpu {
             }
 
             // inc r16
-            0x03 | 0x13 | 0x23 | 0x33 => {
-                self.inc_r16(R16::from_masked_u8(byte, R16_BLOCK1_MASK).unwrap());
+            0x03 => {
+                self.registers
+                    .set_bc(self.registers.get_bc().wrapping_add(1));
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x13 => {
+                self.registers
+                    .set_de(self.registers.get_de().wrapping_add(1));
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x23 => {
+                self.registers
+                    .set_hl(self.registers.get_hl().wrapping_add(1));
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x33 => {
+                self.registers.stack_pointer = self.registers.stack_pointer.wrapping_add(1);
                 self.program_counter += 1;
                 self.cycles += 2;
             }
             // dec r16
-            0x0B | 0x1B | 0x2B | 0x3B => {
-                self.dec_r16(R16::from_masked_u8(byte, R16_BLOCK1_MASK).unwrap());
+            0x0B => {
+                self.registers
+                    .set_bc(self.registers.get_bc().wrapping_sub(1));
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x1B => {
+                self.registers
+                    .set_de(self.registers.get_de().wrapping_sub(1));
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x2B => {
+                self.registers
+                    .set_hl(self.registers.get_hl().wrapping_sub(1));
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x3B => {
+                self.registers.stack_pointer = self.registers.stack_pointer.wrapping_sub(1);
                 self.program_counter += 1;
                 self.cycles += 2;
             }
             // add hl, r16
-            0x09 | 0x19 | 0x29 | 0x39 => {
-                self.add_hl_r16(R16::from_masked_u8(byte, R16_BLOCK1_MASK).unwrap());
+            0x09 => {
+                self.add_hl_r16(self.registers.get_bc());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x19 => {
+                self.add_hl_r16(self.registers.get_de());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x29 => {
+                self.add_hl_r16(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x39 => {
+                self.add_hl_r16(self.registers.stack_pointer);
                 self.program_counter += 1;
                 self.cycles += 2;
             }
 
             // inc r8
-            0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x3C | 0x34 => {
-                self.inc_r8(R8::from_masked_u8(byte, R8_BLOCK1_MASK).unwrap());
+            0x04 => {
+                self.registers.b = self.add_and_set_flags(self.registers.b, 1, false, true);
                 self.program_counter += 1;
                 self.cycles += 1;
+            }
+            0x0C => {
+                self.registers.c = self.add_and_set_flags(self.registers.c, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x14 => {
+                self.registers.d = self.add_and_set_flags(self.registers.d, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x1C => {
+                self.registers.e = self.add_and_set_flags(self.registers.e, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x24 => {
+                self.registers.h = self.add_and_set_flags(self.registers.h, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x2C => {
+                self.registers.l = self.add_and_set_flags(self.registers.l, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x3C => {
+                self.registers.a = self.add_and_set_flags(self.registers.a, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x34 => {
+                let address = self.registers.get_hl();
+                let val = self.memory.borrow().read_byte(address);
+                let result = self.add_and_set_flags(val, 1, false, true);
+                self.memory.borrow_mut().write_byte(address, result);
+                self.program_counter += 1;
+                self.cycles += 3;
             }
 
             // dec r8
-            0x05 | 0x0D | 0x15 | 0x1D | 0x25 | 0x2D | 0x3D | 0x35 => {
-                self.dec_r8(R8::from_masked_u8(byte, R8_BLOCK1_MASK).unwrap());
+            0x05 => {
+                self.registers.b = self.sub_and_set_flags(self.registers.b, 1, false, true);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0x0D => {
+                self.registers.c = self.sub_and_set_flags(self.registers.c, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x15 => {
+                self.registers.d = self.sub_and_set_flags(self.registers.d, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x1D => {
+                self.registers.e = self.sub_and_set_flags(self.registers.e, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x25 => {
+                self.registers.h = self.sub_and_set_flags(self.registers.h, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x2D => {
+                self.registers.l = self.sub_and_set_flags(self.registers.l, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x3D => {
+                self.registers.a = self.sub_and_set_flags(self.registers.a, 1, false, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x35 => {
+                let address = self.registers.get_hl();
+                let val = self.memory.borrow().read_byte(address);
+                let result = self.sub_and_set_flags(val, 1, false, true);
+                self.memory.borrow_mut().write_byte(address, result);
+                self.program_counter += 1;
+                self.cycles += 3;
+            }
 
             // ld r8, imm8
-            0x06 | 0x0E | 0x16 | 0x1E | 0x26 | 0x2E | 0x3E | 0x36 => {
-                self.ld_r8_imm8(R8::from_masked_u8(byte, R8_BLOCK1_MASK).unwrap());
+            0x06 => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                self.registers.b = imm8;
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+            0x0E => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                self.registers.c = imm8;
+                self.program_counter += 2;
+                self.cycles += 2;
+            }
+            0x16 => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                self.registers.d = imm8;
+                self.program_counter += 2;
+                self.cycles += 2;
+            }
+            0x1E => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                self.registers.e = imm8;
+                self.program_counter += 2;
+                self.cycles += 2;
+            }
+            0x26 => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                self.registers.h = imm8;
+                self.program_counter += 2;
+                self.cycles += 2;
+            }
+            0x2E => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                self.registers.l = imm8;
+                self.program_counter += 2;
+                self.cycles += 2;
+            }
+            0x3E => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                self.registers.a = imm8;
+                self.program_counter += 2;
+                self.cycles += 2;
+            }
+            0x36 => {
+                let imm8 = self.memory.borrow().read_byte(self.program_counter + 1);
+                let address = self.registers.get_hl();
+                self.memory.borrow_mut().write_byte(address, imm8);
+                self.program_counter += 2;
+                self.cycles += 3;
+            }
 
             0x07 => {
-                self.rlc(R8::A, R8::A);
+                self.registers.a = self.rlc(self.registers.a);
                 self.registers.f.zero = false;
                 self.program_counter += 1;
                 self.cycles += 1;
             }
             0x17 => {
-                self.rl(R8::A, R8::A);
+                self.registers.a = self.rl(self.registers.a);
                 self.registers.f.zero = false;
                 self.program_counter += 1;
                 self.cycles += 1;
@@ -1324,13 +939,13 @@ impl Cpu {
                 self.cycles += 1;
             }
             0x0F => {
-                self.rrc(R8::A, R8::A);
+                self.registers.a = self.rrc(self.registers.a);
                 self.registers.f.zero = false;
                 self.program_counter += 1;
                 self.cycles += 1;
             }
             0x1F => {
-                self.rr(R8::A, R8::A);
+                self.registers.a = self.rr(self.registers.a);
                 self.registers.f.zero = false;
                 self.program_counter += 1;
                 self.cycles += 1;
@@ -1353,69 +968,749 @@ impl Cpu {
             }
 
             // jr cond imm8
-            0x20 | 0x28 | 0x30 | 0x38 => {
-                self.jr_imm8_cond(Condition::from_masked_u8(byte, COND_BLOCK1_MASK).unwrap());
+            0x20 => {
+                if self.registers.f.zero == false {
+                    self.jr_imm8()
+                } else {
+                    self.program_counter += 2;
+                }
+                self.cycles += 3;
+            }
+            0x28 => {
+                if self.registers.f.zero == true {
+                    self.jr_imm8()
+                } else {
+                    self.program_counter += 2;
+                }
+                self.cycles += 3;
+            }
+            0x30 => {
+                if self.registers.f.carry == false {
+                    self.jr_imm8()
+                } else {
+                    self.program_counter += 2;
+                }
+                self.cycles += 3;
+            }
+            0x38 => {
+                if self.registers.f.carry == true {
+                    self.jr_imm8()
+                } else {
+                    self.program_counter += 2;
+                }
                 self.cycles += 3;
             }
 
             // ------------------------------ Block 2 load r8 r8 ------------------------------
             // ld r8 r8, 0 1 r8 dst r8 src
-            0x40..=0x6F | 0x70..=0x75 | 0x77..=0x7F => {
-                self.ld_r8_r8(
-                    R8::from_masked_u8(byte, LD_R8_R8_SRC_MASK).unwrap(),
-                    R8::from_masked_u8(byte, LD_R8_R8_DST_MASK).unwrap(),
-                );
+            //0x40..=0x6F | 0x70..=0x75 | 0x77..=0x7F => {
+            //    self.ld_r8_r8(
+            //        R8::from_masked_u8(byte, LD_R8_R8_SRC_MASK).unwrap(),
+            //        R8::from_masked_u8(byte, LD_R8_R8_DST_MASK).unwrap(),
+            //    );
+            //    self.program_counter += 1;
+            //    self.cycles += 1;
+            //}
+            0x40 => {
+                self.registers.b = self.registers.b;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x41 => {
+                self.registers.b = self.registers.c;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x42 => {
+                self.registers.b = self.registers.d;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x43 => {
+                self.registers.b = self.registers.e;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x44 => {
+                self.registers.b = self.registers.h;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x45 => {
+                self.registers.b = self.registers.l;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x46 => {
+                self.registers.b = self.memory.borrow().read_byte(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x47 => {
+                self.registers.b = self.registers.a;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x48 => {
+                self.registers.c = self.registers.b;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x49 => {
+                self.registers.c = self.registers.c;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x4A => {
+                self.registers.c = self.registers.d;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x4B => {
+                self.registers.c = self.registers.e;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x4C => {
+                self.registers.c = self.registers.h;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x4D => {
+                self.registers.c = self.registers.l;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x4E => {
+                self.registers.c = self.memory.borrow().read_byte(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x4F => {
+                self.registers.c = self.registers.a;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x50 => {
+                self.registers.d = self.registers.b;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x51 => {
+                self.registers.d = self.registers.c;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x52 => {
+                self.registers.d = self.registers.d;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x53 => {
+                self.registers.d = self.registers.e;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x54 => {
+                self.registers.d = self.registers.h;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x55 => {
+                self.registers.d = self.registers.l;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x56 => {
+                self.registers.d = self.memory.borrow().read_byte(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x57 => {
+                self.registers.d = self.registers.a;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x58 => {
+                self.registers.e = self.registers.b;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x59 => {
+                self.registers.e = self.registers.c;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x5A => {
+                self.registers.e = self.registers.d;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x5B => {
+                self.registers.e = self.registers.e;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x5C => {
+                self.registers.e = self.registers.h;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x5D => {
+                self.registers.e = self.registers.l;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x5E => {
+                self.registers.e = self.memory.borrow().read_byte(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x5F => {
+                self.registers.e = self.registers.a;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x60 => {
+                self.registers.h = self.registers.b;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x61 => {
+                self.registers.h = self.registers.c;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x62 => {
+                self.registers.h = self.registers.d;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x63 => {
+                self.registers.h = self.registers.e;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x64 => {
+                self.registers.h = self.registers.h;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x65 => {
+                self.registers.h = self.registers.l;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x66 => {
+                self.registers.h = self.memory.borrow().read_byte(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x67 => {
+                self.registers.h = self.registers.a;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x68 => {
+                self.registers.l = self.registers.b;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x69 => {
+                self.registers.l = self.registers.c;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x6A => {
+                self.registers.l = self.registers.d;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x6B => {
+                self.registers.l = self.registers.e;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x6C => {
+                self.registers.l = self.registers.h;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x6D => {
+                self.registers.l = self.registers.l;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x6E => {
+                self.registers.l = self.memory.borrow().read_byte(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x6F => {
+                self.registers.l = self.registers.a;
                 self.program_counter += 1;
                 self.cycles += 1;
             }
 
+            0x70 => {
+                let address = self.registers.get_hl();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.b);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x71 => {
+                let address = self.registers.get_hl();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.c);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x72 => {
+                let address = self.registers.get_hl();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.d);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x73 => {
+                let address = self.registers.get_hl();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.e);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x74 => {
+                let address = self.registers.get_hl();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.h);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x75 => {
+                let address = self.registers.get_hl();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.l);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x77 => {
+                let address = self.registers.get_hl();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x78 => {
+                self.registers.a = self.registers.b;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x79 => {
+                self.registers.a = self.registers.c;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x7A => {
+                self.registers.a = self.registers.d;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x7B => {
+                self.registers.a = self.registers.e;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x7C => {
+                self.registers.a = self.registers.h;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x7D => {
+                self.registers.a = self.registers.l;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x7E => {
+                self.registers.a = self.memory.borrow().read_byte(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 2;
+            }
+            0x7F => {
+                self.registers.a = self.registers.a;
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
             // ------------- Block 3 Arithmetic ------------
 
             // add a, r8	1	0	0	0	0	Operand (r8)
-            0x80 | 0x81 | 0x82 | 0x83 | 0x84 | 0x85 | 0x86 | 0x87 => {
-                self.add_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0x80 => {
+                self.registers.a =
+                    self.add_and_set_flags(self.registers.a, self.registers.b, true, true);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0x81 => {
+                self.registers.a =
+                    self.add_and_set_flags(self.registers.a, self.registers.c, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x82 => {
+                self.registers.a =
+                    self.add_and_set_flags(self.registers.a, self.registers.d, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x83 => {
+                self.registers.a =
+                    self.add_and_set_flags(self.registers.a, self.registers.e, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x84 => {
+                self.registers.a =
+                    self.add_and_set_flags(self.registers.a, self.registers.h, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x85 => {
+                self.registers.a =
+                    self.add_and_set_flags(self.registers.a, self.registers.l, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x86 => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.registers.a = self.add_and_set_flags(self.registers.a, value, true, true);
+                self.program_counter += 1;
+            }
+            0x87 => {
+                self.registers.a =
+                    self.add_and_set_flags(self.registers.a, self.registers.a, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+
             // adc a, r8	1	0	0	0	1	Operand (r8)
-            0x88 | 0x89 | 0x8A | 0x8B | 0x8C | 0x8D | 0x8E | 0x8F => {
-                self.adc_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0x88 => {
+                self.registers.a = self.adc_and_set_flags(self.registers.a, self.registers.b);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0x89 => {
+                self.registers.a = self.adc_and_set_flags(self.registers.a, self.registers.c);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x8A => {
+                self.registers.a = self.adc_and_set_flags(self.registers.a, self.registers.d);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x8B => {
+                self.registers.a = self.adc_and_set_flags(self.registers.a, self.registers.e);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x8C => {
+                self.registers.a = self.adc_and_set_flags(self.registers.a, self.registers.h);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x8D => {
+                self.registers.a = self.adc_and_set_flags(self.registers.a, self.registers.l);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x8E => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.registers.a = self.adc_and_set_flags(self.registers.a, value);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x8F => {
+                self.registers.a = self.adc_and_set_flags(self.registers.a, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+
             // sub a, r8	1	0	0	1	0	Operand (r8)
-            0x90 | 0x91 | 0x92 | 0x93 | 0x94 | 0x95 | 0x96 | 0x97 => {
-                self.sub_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0x90 => {
+                self.registers.a =
+                    self.sub_and_set_flags(self.registers.a, self.registers.b, true, true);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0x91 => {
+                self.registers.a =
+                    self.sub_and_set_flags(self.registers.a, self.registers.c, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x92 => {
+                self.registers.a =
+                    self.sub_and_set_flags(self.registers.a, self.registers.d, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x93 => {
+                self.registers.a =
+                    self.sub_and_set_flags(self.registers.a, self.registers.e, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x94 => {
+                self.registers.a =
+                    self.sub_and_set_flags(self.registers.a, self.registers.h, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x95 => {
+                self.registers.a =
+                    self.sub_and_set_flags(self.registers.a, self.registers.l, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x96 => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.registers.a = self.sub_and_set_flags(self.registers.a, value, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x97 => {
+                self.registers.a =
+                    self.sub_and_set_flags(self.registers.a, self.registers.a, true, true);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+
             // sbc a, r8	1	0	0	1	1	Operand (r8)
-            0x98 | 0x99 | 0x9A | 0x9B | 0x9C | 0x9D | 0x9E | 0x9F => {
-                self.sbc_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0x98 => {
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, self.registers.b);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0x99 => {
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, self.registers.c);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x9A => {
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, self.registers.d);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x9B => {
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, self.registers.e);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x9C => {
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, self.registers.h);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x9D => {
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, self.registers.l);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x9E => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, value);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0x9F => {
+                self.registers.a = self.sbc_and_set_flags(self.registers.a, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+
             // and a, r8	1	0	1	0	0	Operand (r8)
-            0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5 | 0xA6 | 0xA7 => {
-                self.and_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0xA0 => {
+                self.registers.a = self.and_and_set_flags(self.registers.a, self.registers.b);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0xA1 => {
+                self.registers.a = self.and_and_set_flags(self.registers.a, self.registers.c);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xA2 => {
+                self.registers.a = self.and_and_set_flags(self.registers.a, self.registers.d);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xA3 => {
+                self.registers.a = self.and_and_set_flags(self.registers.a, self.registers.e);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xA4 => {
+                self.registers.a = self.and_and_set_flags(self.registers.a, self.registers.h);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xA5 => {
+                self.registers.a = self.and_and_set_flags(self.registers.a, self.registers.l);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xA6 => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.registers.a = self.and_and_set_flags(self.registers.a, value);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xA7 => {
+                self.registers.a = self.and_and_set_flags(self.registers.a, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+
             // xor a, r8	1	0	1	0	1	Operand (r8)
-            0xA8 | 0xA9 | 0xAA | 0xAB | 0xAC | 0xAD | 0xAE | 0xAF => {
-                self.xor_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0xA8 => {
+                self.registers.a = self.xor_and_set_flags(self.registers.a, self.registers.b);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0xA9 => {
+                self.registers.a = self.xor_and_set_flags(self.registers.a, self.registers.c);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xAA => {
+                self.registers.a = self.xor_and_set_flags(self.registers.a, self.registers.d);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xAB => {
+                self.registers.a = self.xor_and_set_flags(self.registers.a, self.registers.e);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xAC => {
+                self.registers.a = self.xor_and_set_flags(self.registers.a, self.registers.h);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xAD => {
+                self.registers.a = self.xor_and_set_flags(self.registers.a, self.registers.l);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xAE => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.registers.a = self.xor_and_set_flags(self.registers.a, value);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xAF => {
+                self.registers.a = self.xor_and_set_flags(self.registers.a, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+
             // or a, r8	1	0	1	1	0	Operand (r8)
-            0xB0 | 0xB1 | 0xB2 | 0xB3 | 0xB4 | 0xB5 | 0xB6 | 0xB7 => {
-                self.or_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0xB0 => {
+                self.registers.a = self.or_and_set_flags(self.registers.a, self.registers.b);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
+            0xB1 => {
+                self.registers.a = self.or_and_set_flags(self.registers.a, self.registers.c);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xB2 => {
+                self.registers.a = self.or_and_set_flags(self.registers.a, self.registers.d);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xB3 => {
+                self.registers.a = self.or_and_set_flags(self.registers.a, self.registers.e);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xB4 => {
+                self.registers.a = self.or_and_set_flags(self.registers.a, self.registers.h);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xB5 => {
+                self.registers.a = self.or_and_set_flags(self.registers.a, self.registers.l);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xB6 => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.registers.a = self.or_and_set_flags(self.registers.a, value);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xB7 => {
+                self.registers.a = self.or_and_set_flags(self.registers.a, self.registers.a);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+
             // cp a, r8	1	0	1	1	1	Operand (r8)
-            0xB8 | 0xB9 | 0xBA | 0xBB | 0xBC | 0xBD | 0xBE | 0xBF => {
-                self.cp_a_r8(R8::from_masked_u8(byte, ARITHMETIC_MASK).unwrap());
+            0xB8 => {
+                self.cp_and_set_flags(self.registers.a, self.registers.b);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xB9 => {
+                self.cp_and_set_flags(self.registers.a, self.registers.c);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xBA => {
+                self.cp_and_set_flags(self.registers.a, self.registers.d);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xBB => {
+                self.cp_and_set_flags(self.registers.a, self.registers.e);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xBC => {
+                self.cp_and_set_flags(self.registers.a, self.registers.h);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xBD => {
+                self.cp_and_set_flags(self.registers.a, self.registers.l);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xBE => {
+                let address = self.registers.get_hl();
+                let value = self.memory.borrow().read_byte(address);
+                self.cp_and_set_flags(self.registers.a, value);
+                self.program_counter += 1;
+                self.cycles += 1;
+            }
+            0xBF => {
+                self.cp_and_set_flags(self.registers.a, self.registers.a);
                 self.program_counter += 1;
                 self.cycles += 1;
             }
@@ -1429,6 +1724,7 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // adc a, imm8
             0xCE => {
                 let value = self.memory.borrow().read_byte(self.program_counter + 1);
@@ -1437,6 +1733,7 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // sub a, imm8
             0xD6 => {
                 let value = self.memory.borrow().read_byte(self.program_counter + 1);
@@ -1445,6 +1742,7 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // sbc a, imm8
             0xDE => {
                 let value = self.memory.borrow().read_byte(self.program_counter + 1);
@@ -1453,6 +1751,7 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // and a, imm8
             0xE6 => {
                 let value = self.memory.borrow().read_byte(self.program_counter + 1);
@@ -1461,6 +1760,7 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // xor a, imm8
             0xEE => {
                 let value = self.memory.borrow().read_byte(self.program_counter + 1);
@@ -1469,6 +1769,7 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // or a, imm8
             0xF6 => {
                 let value = self.memory.borrow().read_byte(self.program_counter + 1);
@@ -1477,6 +1778,7 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // cp a, imm8
             0xFE => {
                 let value = self.memory.borrow().read_byte(self.program_counter + 1);
@@ -1484,10 +1786,43 @@ impl Cpu {
                 self.program_counter += 2;
                 self.cycles += 2;
             }
+
             // ret cond
-            0xC0 | 0xC8 | 0xD0 | 0xD8 => {
-                self.ret_cond(Condition::from_masked_u8(byte, COND_BLOCK4_MASK).unwrap());
-                self.cycles += 5;
+            0xC0 => {
+                if self.registers.f.zero == false {
+                    self.ret();
+                    self.cycles += 5;
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 2;
+                }
+            }
+            0xC8 => {
+                if self.registers.f.zero == true {
+                    self.ret();
+                    self.cycles += 5;
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 2;
+                }
+            }
+            0xD0 => {
+                if self.registers.f.carry == false {
+                    self.ret();
+                    self.cycles += 5;
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 2;
+                }
+            }
+            0xD8 => {
+                if self.registers.f.carry == true {
+                    self.ret();
+                    self.cycles += 5;
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 2;
+                }
             }
             // ret
             0xC9 => {
@@ -1496,23 +1831,58 @@ impl Cpu {
             }
             // RetI,
             0xD9 => {
-                self.reti();
+                self.ei();
+                self.ret();
                 self.cycles += 4;
             }
             // JpCondImm16(Condition),
-            0xC2 | 0xCA | 0xD2 | 0xDA => {
+            0xC2 => {
                 let address = self.memory.borrow().read_word(self.program_counter + 1);
                 self.program_counter += 2;
-                self.jp_cond(
-                    address,
-                    Condition::from_masked_u8(byte, COND_BLOCK4_MASK).unwrap(),
-                );
-                self.cycles += 4;
+                if self.registers.f.zero == false {
+                    self.jp(address);
+                    self.cycles += 4;
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 3;
+                }
+            }
+            0xCA => {
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 2;
+                if self.registers.f.zero == true {
+                    self.jp(address);
+                    self.cycles += 4;
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 3;
+                }
+            }
+            0xD2 => {
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 2;
+                if self.registers.f.carry == false {
+                    self.cycles += 4;
+                    self.jp(address)
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 3;
+                }
+            }
+            0xDA => {
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 2;
+                if self.registers.f.carry == true {
+                    self.cycles += 4;
+                    self.jp(address)
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 3;
+                }
             }
             // JpImm16,
             0xC3 => {
                 let address = self.memory.borrow().read_word(self.program_counter + 1);
-                // self.program_counter += 3;
                 self.jp(address);
                 self.cycles += 4;
             }
@@ -1522,14 +1892,49 @@ impl Cpu {
                 self.cycles += 1;
             }
             // CallCondImm16(Condition),
-            0xC4 | 0xCC | 0xD4 | 0xDC => {
+            0xC4 => {
                 let address = self.memory.borrow().read_word(self.program_counter + 1);
                 self.program_counter += 2;
-                self.call_cond(
-                    address,
-                    Condition::from_masked_u8(byte, COND_BLOCK4_MASK).unwrap(),
-                );
-                self.cycles += 6;
+                if self.registers.f.zero == false {
+                    self.cycles += 6;
+                    self.call(address)
+                } else {
+                    self.cycles += 3;
+                    self.program_counter += 1;
+                }
+            }
+            0xCC => {
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 2;
+                if self.registers.f.zero == true {
+                    self.cycles += 6;
+                    self.call(address)
+                } else {
+                    self.cycles += 3;
+                    self.program_counter += 1;
+                }
+            }
+            0xD4 => {
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 2;
+                if self.registers.f.carry == false {
+                    self.cycles += 6;
+                    self.call(address)
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 3;
+                }
+            }
+            0xDC => {
+                let address = self.memory.borrow().read_word(self.program_counter + 1);
+                self.program_counter += 2;
+                if self.registers.f.carry == true {
+                    self.cycles += 6;
+                    self.call(address)
+                } else {
+                    self.program_counter += 1;
+                    self.cycles += 3;
+                }
             }
             // CallImm16,
             0xCD => {
@@ -1541,58 +1946,101 @@ impl Cpu {
             // RstTgt3,
             0xC7 | 0xCF | 0xD7 | 0xDF | 0xE7 | 0xEF | 0xF7 | 0xFF => {
                 let address = (byte & TGT3_MASK) >> TGT3_MASK.trailing_zeros();
-                self.rst_tgt3(address);
+                self.call(address as u16 * 8);
                 self.cycles += 4;
             }
             // PopR16(R16Stk),
-            0xC1 | 0xD1 | 0xE1 | 0xF1 => {
-                self.pop_r16(R16Stk::from_masked_u8(byte, R16STK_BLOCK4_MASK).unwrap());
+            0xC1 => {
+                let value = self.pop();
+                self.registers.set_bc(value);
+                self.program_counter += 1;
+                self.cycles += 3;
+            }
+            0xD1 => {
+                let value = self.pop();
+                self.registers.set_de(value);
+                self.program_counter += 1;
+                self.cycles += 3;
+            }
+            0xE1 => {
+                let value = self.pop();
+                self.registers.set_hl(value);
+                self.program_counter += 1;
+                self.cycles += 3;
+            }
+            0xF1 => {
+                let value = self.pop();
+                self.registers.set_af(value);
                 self.program_counter += 1;
                 self.cycles += 3;
             }
             // PushR16(R16Stk),
-            0xC5 | 0xD5 | 0xE5 | 0xF5 => {
-                self.push_r16(R16Stk::from_masked_u8(byte, R16STK_BLOCK4_MASK).unwrap());
+            0xC5 => {
+                self.push(self.registers.get_bc());
+                self.program_counter += 1;
+                self.cycles += 4;
+            }
+            0xD5 => {
+                self.push(self.registers.get_de());
+                self.program_counter += 1;
+                self.cycles += 4;
+            }
+            0xE5 => {
+                self.push(self.registers.get_hl());
+                self.program_counter += 1;
+                self.cycles += 4;
+            }
+            0xF5 => {
+                self.push(self.registers.get_af());
                 self.program_counter += 1;
                 self.cycles += 4;
             }
             // LdhCAddrA,
             0xE2 => {
-                self.ldh_cptr_a();
+                self.memory
+                    .borrow_mut()
+                    .write_byte(0xFF00 + self.registers.c as u16, self.registers.a);
                 self.program_counter += 1;
                 self.cycles += 2;
             }
             // LdhImm8AddrA,
             0xE0 => {
                 let offset = self.memory.borrow().read_byte(self.program_counter + 1);
-                self.ldh_imm8addr_a(offset);
+                self.memory
+                    .borrow_mut()
+                    .write_byte(0xFF00 + offset as u16, self.registers.a);
                 self.program_counter += 2;
                 self.cycles += 3;
             }
             // LdImm16AddrA,
             0xEA => {
                 let address = self.memory.borrow().read_word(self.program_counter + 1);
-                self.ld_imm16addr_a(address);
+                self.memory
+                    .borrow_mut()
+                    .write_byte(address, self.registers.a);
                 self.program_counter += 3;
                 self.cycles += 4;
             }
             // LdhACAddr,
             0xF2 => {
-                self.ldh_a_caddr();
+                self.registers.a = self
+                    .memory
+                    .borrow()
+                    .read_byte(0xFF00 + self.registers.c as u16);
                 self.program_counter += 1;
                 self.cycles += 3;
             }
             // LdhAImm8Addr,
             0xF0 => {
                 let offset = self.memory.borrow().read_byte(self.program_counter + 1);
-                self.ldh_a_imm8addr(offset);
+                self.registers.a = self.memory.borrow().read_byte(0xFF00 | offset as u16);
                 self.program_counter += 2;
                 self.cycles += 3;
             }
             // LdAImm16Addr,
             0xFA => {
                 let address = self.memory.borrow().read_word(self.program_counter + 1);
-                self.ld_a_imm16addr(address);
+                self.registers.a = self.memory.borrow().read_byte(address);
                 self.program_counter += 3;
                 self.cycles += 4;
             }
@@ -1613,7 +2061,7 @@ impl Cpu {
             }
             // LdSpHl,
             0xF9 => {
-                self.ld_sp_hl();
+                self.registers.stack_pointer = self.registers.get_hl();
                 self.program_counter += 1;
                 self.cycles += 2;
             }
@@ -1636,47 +2084,347 @@ impl Cpu {
             0xCB => {
                 let prefixed = self.memory.borrow().read_byte(self.program_counter + 1);
                 match prefixed {
-                    0x0 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07 => {
-                        let register = R8::from_masked_u8(prefixed, R8CB_MASK).unwrap();
-                        self.rlc(register, register);
+                    0x0 => {
+                        self.registers.b = self.rlc(self.registers.b);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    0x08 | 0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x0E | 0x0F => {
-                        let register = R8::from_masked_u8(prefixed, R8CB_MASK).unwrap();
-                        self.rrc(register, register);
+                    0x01 => {
+                        self.registers.c = self.rlc(self.registers.c);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    0x10 | 0x11 | 0x12 | 0x13 | 0x14 | 0x15 | 0x16 | 0x17 => {
-                        let register = R8::from_masked_u8(prefixed, R8CB_MASK).unwrap();
-                        self.rl(register, register);
+                    0x02 => {
+                        self.registers.d = self.rlc(self.registers.d);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    0x18 | 0x19 | 0x1A | 0x1B | 0x1C | 0x1D | 0x1E | 0x1F => {
-                        let register = R8::from_masked_u8(prefixed, R8CB_MASK).unwrap();
-                        self.rr(register, register);
+                    0x03 => {
+                        self.registers.e = self.rlc(self.registers.e);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    0x20 | 0x21 | 0x22 | 0x23 | 0x24 | 0x25 | 0x26 | 0x27 => {
-                        self.sla(R8::from_masked_u8(prefixed, R8CB_MASK).unwrap());
+                    0x04 => {
+                        self.registers.h = self.rlc(self.registers.h);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    0x28 | 0x29 | 0x2A | 0x2B | 0x2C | 0x2D | 0x2E | 0x2F => {
-                        self.sra(R8::from_masked_u8(prefixed, R8CB_MASK).unwrap());
+                    0x05 => {
+                        self.registers.l = self.rlc(self.registers.l);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    0x30 | 0x31 | 0x32 | 0x33 | 0x34 | 0x35 | 0x36 | 0x37 => {
-                        self.swap(R8::from_masked_u8(prefixed, R8CB_MASK).unwrap());
+                    0x06 => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.rlc(value);
+                        self.memory.borrow_mut().write_byte(address, result);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    0x38 | 0x39 | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x3F => {
-                        self.srl(R8::from_masked_u8(prefixed, R8CB_MASK).unwrap());
+                    0x07 => {
+                        self.registers.a = self.rlc(self.registers.a);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x08 => {
+                        self.registers.b = self.rrc(self.registers.b);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x09 => {
+                        self.registers.c = self.rrc(self.registers.c);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x0A => {
+                        self.registers.d = self.rrc(self.registers.d);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x0B => {
+                        self.registers.e = self.rrc(self.registers.e);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x0C => {
+                        self.registers.h = self.rrc(self.registers.h);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x0D => {
+                        self.registers.l = self.rrc(self.registers.l);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x0E => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.rrc(value);
+                        self.memory.borrow_mut().write_byte(address, result);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x0F => {
+                        self.registers.a = self.rrc(self.registers.a);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x10 => {
+                        self.registers.b = self.rl(self.registers.b);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x11 => {
+                        self.registers.c = self.rl(self.registers.c);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x12 => {
+                        self.registers.d = self.rl(self.registers.d);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x13 => {
+                        self.registers.e = self.rl(self.registers.e);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x14 => {
+                        self.registers.h = self.rl(self.registers.h);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x15 => {
+                        self.registers.l = self.rl(self.registers.l);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x16 => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.rl(value);
+                        self.memory.borrow_mut().write_byte(address, result);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x17 => {
+                        self.registers.a = self.rl(self.registers.a);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x18 => {
+                        self.registers.b = self.rr(self.registers.b);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x19 => {
+                        self.registers.c = self.rr(self.registers.c);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x1A => {
+                        self.registers.d = self.rr(self.registers.d);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x1B => {
+                        self.registers.e = self.rr(self.registers.e);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x1C => {
+                        self.registers.h = self.rr(self.registers.h);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x1D => {
+                        self.registers.l = self.rr(self.registers.l);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x1E => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.rr(value);
+                        self.memory.borrow_mut().write_byte(address, result);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x1F => {
+                        self.registers.a = self.rr(self.registers.a);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x20 => {
+                        self.registers.b = self.sla(self.registers.b);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x21 => {
+                        self.registers.c = self.sla(self.registers.c);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x22 => {
+                        self.registers.d = self.sla(self.registers.d);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x23 => {
+                        self.registers.e = self.sla(self.registers.e);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x24 => {
+                        self.registers.h = self.sla(self.registers.h);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x25 => {
+                        self.registers.l = self.sla(self.registers.l);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x26 => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.sla(value);
+                        self.memory.borrow_mut().write_byte(address, result);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x27 => {
+                        self.registers.a = self.sla(self.registers.a);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x28 => {
+                        self.registers.b = self.sra(self.registers.b);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x29 => {
+                        self.registers.c = self.sra(self.registers.c);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x2A => {
+                        self.registers.d = self.sra(self.registers.d);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x2B => {
+                        self.registers.e = self.sra(self.registers.e);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x2C => {
+                        self.registers.h = self.sra(self.registers.h);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x2D => {
+                        self.registers.l = self.sra(self.registers.l);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x2E => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.sra(value);
+                        self.memory.borrow_mut().write_byte(address, result);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x2F => {
+                        self.registers.a = self.sra(self.registers.a);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x30 => {
+                        self.registers.b = self.swap(self.registers.b);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x31 => {
+                        self.registers.c = self.swap(self.registers.c);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x32 => {
+                        self.registers.d = self.swap(self.registers.d);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x33 => {
+                        self.registers.e = self.swap(self.registers.e);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x34 => {
+                        self.registers.h = self.swap(self.registers.h);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x35 => {
+                        self.registers.l = self.swap(self.registers.l);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x36 => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.swap(value);
+                        self.memory.borrow_mut().write_byte(address, result);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x37 => {
+                        self.registers.a = self.swap(self.registers.a);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x38 => {
+                        self.registers.b = self.srl(self.registers.b);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x39 => {
+                        self.registers.c = self.srl(self.registers.c);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x3A => {
+                        self.registers.d = self.srl(self.registers.d);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x3B => {
+                        self.registers.e = self.srl(self.registers.e);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x3C => {
+                        self.registers.h = self.srl(self.registers.h);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x3D => {
+                        self.registers.l = self.srl(self.registers.l);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x3E => {
+                        let address = self.registers.get_hl();
+                        let value = self.memory.borrow().read_byte(address);
+                        let result = self.srl(value);
+                        self.memory.borrow_mut().write_byte(address, result);
+                        self.program_counter += 2;
+                        self.cycles += 2;
+                    }
+                    0x3F => {
+                        self.registers.a = self.srl(self.registers.a);
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
@@ -1704,7 +2452,6 @@ impl Cpu {
                         self.program_counter += 2;
                         self.cycles += 2;
                     }
-                    _ => {}
                 };
             }
             _ => {}
@@ -1716,6 +2463,12 @@ impl Cpu {
         if !self.halted {
             let current_byte = self.memory.borrow().read_byte(self.program_counter);
             self.execute_instruction(current_byte);
+        } else {
+            self.cycles += 1;
         }
+        let div = self.memory.borrow().read_byte(0xFF04);
+        self.memory
+            .borrow_mut()
+            .write_byte(0xFF04, div.wrapping_add(self.cycles as u8 * 4));
     }
 }
