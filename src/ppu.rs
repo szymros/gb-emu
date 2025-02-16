@@ -25,6 +25,11 @@ const OAM_END_ADDRESS: u16 = 0xFE9F;
 
 const PALETTE_ADDRESS: u16 = 0xFF47;
 
+const WHITE: u8 = 0xFF;
+const LIGHT: u8 = 0xB6;
+const DARK: u8 = 0x49;
+const BLACK: u8 = 0x00;
+
 struct Stat {
     lyc_interrupt: bool,
     mode_2_interrupt: bool,
@@ -49,7 +54,7 @@ pub struct LcdControl {
     background_tile_map_area: bool,
     obj_size: bool,
     obj_enable: bool,
-    window_background_priority: bool,
+    window_background_enable: bool,
 }
 
 pub enum PpuMode {
@@ -65,6 +70,10 @@ pub struct Ppu {
     pub mode: PpuMode,
     pub ly: u8,
     pub lcd_control: LcdControl,
+    pub buffer: [u8; 160 * 144],
+    pub bg_palette: [u8; 4],
+    pub obj0_palette: [u8; 4],
+    pub obj1_palette: [u8; 4],
 }
 
 impl Ppu {
@@ -82,8 +91,12 @@ impl Ppu {
                 background_tile_map_area: true,
                 obj_size: true,
                 obj_enable: true,
-                window_background_priority: true,
+                window_background_enable: true,
             },
+            buffer: [0u8; 160 * 144],
+            bg_palette: [0; 4],
+            obj0_palette: [0; 4],
+            obj1_palette: [0; 4],
         };
     }
 
@@ -100,7 +113,7 @@ impl Ppu {
             background_tile_map_area: (lcd_control & 0x08) == 0x08,
             obj_size: (lcd_control & 0x04) == 0x04,
             obj_enable: (lcd_control & 0x02) == 0x02,
-            window_background_priority: (lcd_control & 0x01) == 0x01,
+            window_background_enable: (lcd_control & 0x01) == 0x01,
         };
     }
 
@@ -137,12 +150,12 @@ impl Ppu {
             m_str, self.current_dots, self.ly, sy
         );
     }
-    pub fn next(&mut self, cycles: u16) -> Option<(u8, [u8; 160])> {
+    pub fn next(&mut self, cycles: u16) -> Option<[u8; 160 * 144]> {
         self.ly = self.memory.borrow().read_byte(LY_ADDRESS);
         self.update_lcd_control();
-        let mut updated_line: Option<(u8, [u8; 160])> = None;
+        let mut updated_frame: Option<[u8; 160 * 144]> = None;
         if !self.lcd_control.ppu_enable {
-            return updated_line;
+            return updated_frame;
         }
         let new_dots = self.current_dots + cycles;
 
@@ -160,7 +173,7 @@ impl Ppu {
                     self.mode = PpuMode::Hblank;
                     self.current_dots = new_dots - 289;
                     self.stat_interrupt(StatInterruptReason::HblankModeEnabled);
-                    updated_line = Some((self.ly, self.update_scan_line()));
+                    self.update_scan_line();
                 } else {
                     self.current_dots = new_dots;
                 }
@@ -172,6 +185,7 @@ impl Ppu {
                     self.current_dots = new_dots - 87;
                     self.ly += 1;
                     if self.ly >= 144 {
+                        updated_frame = Some(self.buffer);
                         self.mode = PpuMode::Vblank;
                         let current_if = self.memory.borrow().read_byte(INTERRUPT_FLAG_ADDRESS);
                         self.memory
@@ -214,13 +228,15 @@ impl Ppu {
             self.stat_interrupt(StatInterruptReason::LycEqualLy);
         };
         self.memory.borrow_mut().write_byte(LY_ADDRESS, self.ly);
-        return updated_line;
+        return updated_frame;
     }
 
-    fn update_scan_line(&mut self) -> [u8; 160] {
-        let mut pixel_buffer: [u8; 160] = [0; 160];
-        if !self.lcd_control.window_background_priority {
-            pixel_buffer = [0xFF; 160]
+    fn update_scan_line(&mut self) {
+        self.update_palettes();
+        let buffer_start = self.ly as u16 * 160;
+        if !self.lcd_control.window_background_enable {
+            self.buffer[(buffer_start as usize)..((buffer_start + 160) as usize)]
+                .copy_from_slice(&[0xFF; 160]);
         } else {
             let wx = self
                 .memory
@@ -230,19 +246,18 @@ impl Ppu {
             let wy = self.memory.borrow().read_byte(WINDOW_Y_ADDRESS);
             let sx = self.memory.borrow().read_byte(SC_X_ADDRESS);
             let sy = self.memory.borrow().read_byte(SC_Y_ADDRESS);
-            let palette = self.read_palette(0);
             for x in 0..160 {
                 let offset_x: u16;
                 let offset_y: u16;
                 let tile_map_address: u16;
                 if self.lcd_control.window_enable && x >= wx && self.ly >= wy {
+                    offset_x = (x - wx) as u16;
+                    offset_y = (self.ly - wy) as u16;
                     tile_map_address = if self.lcd_control.window_tile_map_area {
                         TILE_MAP_AREA_1_START
                     } else {
                         TILE_MAP_AREA_0_START
                     };
-                    offset_x = (x - wx) as u16;
-                    offset_y = (self.ly - wy) as u16;
                 } else {
                     offset_x = x.wrapping_add(sx) as u16;
                     offset_y = self.ly.wrapping_add(sy) as u16;
@@ -279,53 +294,62 @@ impl Ppu {
                 } else {
                     0
                 };
-                let color = palette[pix_l | pix_h];
-                pixel_buffer[x as usize] = color;
+                let color = self.bg_palette[pix_l | pix_h];
+                self.buffer[(buffer_start + x as u16) as usize] = color;
             }
         }
         if self.lcd_control.obj_enable {
-            self.draw_sprites(&mut pixel_buffer);
+            self.draw_sprites();
         }
-        return pixel_buffer;
     }
 
+    fn get_color(&self, byte: u8) -> u8 {
+        match byte & 3 {
+            0 => WHITE, // white
+            1 => LIGHT, //light
+            2 => DARK,  // dark
+            3 => BLACK, // black
+            _ => 0,
+        }
+    }
+
+    fn update_palettes(&mut self) {
+        let bg_pallete_byte = self.memory.borrow().read_byte(PALETTE_ADDRESS);
+        let obj0_pallete_byte = self.memory.borrow().read_byte(PALETTE_ADDRESS + 1);
+        let obj1_pallete_byte = self.memory.borrow().read_byte(PALETTE_ADDRESS + 2);
+        self.bg_palette = [
+            self.get_color(bg_pallete_byte),
+            self.get_color(bg_pallete_byte >> 2),
+            self.get_color(bg_pallete_byte >> 4),
+            self.get_color(bg_pallete_byte >> 6),
+        ];
+        self.obj0_palette = [
+            self.get_color(obj0_pallete_byte),
+            self.get_color(obj0_pallete_byte >> 2),
+            self.get_color(obj0_pallete_byte >> 4),
+            self.get_color(obj0_pallete_byte >> 6),
+        ];
+        self.obj1_palette = [
+            self.get_color(obj1_pallete_byte),
+            self.get_color(obj1_pallete_byte >> 2),
+            self.get_color(obj1_pallete_byte >> 4),
+            self.get_color(obj1_pallete_byte >> 6),
+        ];
+    }
     fn read_palette(&self, pallete_index: u8) -> [u8; 4] {
         let pallete_byte = self
             .memory
             .borrow()
             .read_byte(PALETTE_ADDRESS + pallete_index as u16);
-        let color_3 = match (pallete_byte >> 6) & 3 {
-            0 => 0xFF, // white
-            1 => 0xC0, //light
-            2 => 0x60, // dark
-            3 => 0x00, // black
-            _ => 0,
-        };
-        let color_2 = match (pallete_byte >> 4) & 3 {
-            0 => 0xFF, // white
-            1 => 0xC0, //light
-            2 => 0x60, // dark
-            3 => 0x00, // black
-            _ => 0,
-        };
-        let color_1 = match (pallete_byte >> 2) & 3 {
-            0 => 0xFF, // white
-            1 => 0xC0, //light
-            2 => 0x60, // dark
-            3 => 0x00, // black
-            _ => 0,
-        };
-        let color_0 = match pallete_byte & 3 {
-            0 => 0xFF, // white
-            1 => 0xC0, //light
-            2 => 0x60, // dark
-            3 => 0x00, // black
-            _ => 0,
-        };
+        let color_3 = self.get_color(pallete_byte >> 6);
+        let color_2 = self.get_color(pallete_byte >> 4);
+        let color_1 = self.get_color(pallete_byte >> 2);
+        let color_0 = self.get_color(pallete_byte);
         return [color_0, color_1, color_2, color_3];
     }
 
-    fn draw_sprites(&mut self, pixel_buffer: &mut [u8; 160]) {
+    fn draw_sprites(&mut self) {
+        let buffer_start = self.ly as u16 * 160;
         let sprite_size = if self.lcd_control.obj_size { 16 } else { 8 };
         for i in (OAM_START_ADDRESS..=OAM_END_ADDRESS).step_by(4) {
             let sprite_y_pos = self.memory.borrow().read_byte(i).wrapping_sub(16);
@@ -338,9 +362,6 @@ impl Ppu {
             }
             let sprite_tile_index = self.memory.borrow().read_byte(i + 2);
             let sprite_attributes = self.memory.borrow().read_byte(i + 3);
-            if sprite_attributes & 0x80 == 0x80 {
-                continue;
-            }
             let offset_y = if sprite_attributes & 0x40 == 0 {
                 self.ly - sprite_y_pos
             } else {
@@ -350,7 +371,11 @@ impl Ppu {
                 TILE_DATA_AREA_1_START + sprite_tile_index as u16 * 16 + 2 * offset_y as u16;
             let sprite_tile_data_h = self.memory.borrow().read_byte(sprite_tile_address);
             let sprite_tile_data_l = self.memory.borrow().read_byte(sprite_tile_address + 1);
-            let palette = self.read_palette(((sprite_attributes >> 3) & 1) + 1);
+            let palette = if ((sprite_attributes >> 3) & 1) == 1 {
+                self.obj1_palette
+            } else {
+                self.obj0_palette
+            };
 
             for x in 0..8 {
                 if sprite_x_pos + x > 160 {
@@ -372,8 +397,14 @@ impl Ppu {
                     0
                 };
                 let color = palette[pix_l | pix_h];
-
-                pixel_buffer[(sprite_x_pos + x) as usize] = color;
+                if color == 0xFF
+                    || (self.buffer[(buffer_start + sprite_x_pos as u16 + x as u16) as usize]
+                        != self.bg_palette[0]
+                        && sprite_attributes & 0x80 == 0x80)
+                {
+                    continue;
+                }
+                self.buffer[(buffer_start + sprite_x_pos as u16 + x as u16) as usize] = color;
             }
         }
     }

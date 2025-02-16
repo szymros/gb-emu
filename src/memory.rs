@@ -57,7 +57,7 @@ impl Mem {
     }
 
     pub fn boot_up(&mut self) {
-        self.write_byte(0xFF00, 0xCF);
+        self.write_byte(0xFF00, 0xFF);
         self.write_byte(0xFF01, 0x00);
         self.write_byte(0xFF02, 0x7E);
         self.write_byte(0xFF04, 0xAB);
@@ -164,7 +164,8 @@ impl Mem {
     pub fn dma_transfer(&mut self, val: u8) {
         let src = (val as u16) << 8;
         for i in 0..=0x9F {
-            self.oam[i] = self.read_byte(src + i as u16)
+            let tocpy = self.read_byte(src + i as u16);
+            self.write_byte(0xFE00+i, tocpy);
         }
     }
 }

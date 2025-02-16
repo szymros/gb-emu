@@ -1,2 +1,1 @@
-install sdl2
-sudo apt install libsdl2-dev
+install libsdl2-dev
