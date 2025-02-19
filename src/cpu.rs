@@ -119,7 +119,7 @@ pub struct Cpu {
     pub(crate) registers: Registers,
     pub(crate) program_counter: u16,
     pub memory: Rc<RefCell<Mem>>,
-    pub cycles: u16,
+    pub cycles: u32,
     halted: bool,
     interrupts_enabled: bool,
 }
@@ -2443,6 +2443,7 @@ impl Cpu {
     }
 
     pub fn next(&mut self) -> u16{
+        //self.log();
         self.handle_interrupt();
         let cycles = if !self.halted {
             let current_byte = self.memory.borrow().read_byte(self.program_counter);

@@ -5,14 +5,13 @@ mod ppu;
 use cpu::Cpu;
 use joypad::Joypad;
 use memory::Mem;
+use minifb::{Key, Window, WindowOptions};
 use ppu::Ppu;
-use sdl2::pixels::PixelFormatEnum;
-use sdl2::{self, event::Event, rect::Rect};
 use std::cell::RefCell;
 use std::rc::Rc;
+
 const WINDOW_WIDTH: u32 = 480;
 const WINDOW_HEIGHT: u32 = 432;
-const WINDOW_NAME: &str = "Rust SDL2";
 
 fn main() {
     let rom = std::fs::read("./roms/pred.gb").unwrap();
@@ -22,74 +21,50 @@ fn main() {
     let mut ppu = Ppu::new(Rc::clone(&mem));
     let mut joypad = Joypad::new(Rc::clone(&mem));
 
-    let sdl_context = sdl2::init().unwrap();
-    let video_subsystem = sdl_context.video().unwrap();
-    let window = video_subsystem
-        .window(WINDOW_NAME, WINDOW_WIDTH, WINDOW_HEIGHT)
-        .position_centered()
-        .build()
-        .unwrap();
-    let mut canvas: sdl2::render::Canvas<sdl2::video::Window> =
-        window.into_canvas().build().unwrap();
-    let texture_creator = canvas.texture_creator();
-    let mut texture = texture_creator
-        .create_texture(
-            PixelFormatEnum::RGB332,
-            sdl2::render::TextureAccess::Streaming,
-            160,
-            144,
-        )
-        .unwrap();
-    texture
-        .with_lock(None, |buffer: &mut [u8], pitch: usize| {
-            for y in 0..144 {
-                for x in 0..160 {
-                    let offset = y * pitch + x;
-                    buffer[offset] = 0x80;
-                }
-            }
-        })
-        .unwrap();
-    canvas.clear();
-    canvas
-        .copy(&texture, None, Rect::new(0, 0, 160 * 2, 144 * 2))
-        .unwrap();
-    canvas.present();
-
-    let mut event_pump = sdl_context.event_pump().unwrap();
+    let mut buffer: Vec<u32> = vec![0; 160 * 144];
+    let mut window = Window::new(
+        "gbemu",
+        WINDOW_WIDTH as usize,
+        WINDOW_HEIGHT as usize,
+        WindowOptions::default(),
+    )
+    .unwrap();
+    window.set_target_fps(60);
+    window.set_key_repeat_rate(0.001);
+    window.set_key_repeat_delay(0.001);
     'running: loop {
+        if !window.is_open() {
+            break;
+        }
+        if window.is_key_down(Key::Escape) {
+            break 'running;
+        }
         let cycles = cpu.next();
 
         match ppu.next(cycles * 4) {
             Some(updated_frame) => {
-                texture
-                    .with_lock(None, |buffer: &mut [u8], _: usize| {
-                        buffer.copy_from_slice(&updated_frame);
-                    })
-                    .unwrap();
-                canvas
-                    .copy(&texture, None, Rect::new(0, 0, 160 * 2, 144 * 2))
-                    .unwrap();
-                canvas.present();
+                buffer.copy_from_slice(&updated_frame);
+                window.update_with_buffer(&buffer, 160, 144).unwrap()
             }
             None => (),
         }
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. } => {
-                    break 'running;
-                }
 
-                Event::KeyDown {
-                    keycode: Some(keycode),
-                    ..
-                } => joypad.keydown(keycode),
-
-                Event::KeyUp {
-                    keycode: Some(keycode),
-                    ..
-                } => joypad.keyup(keycode),
-                _ => {}
+        let keys = vec![
+            Key::A,
+            Key::S,
+            Key::Q,
+            Key::W,
+            Key::Up,
+            Key::Down,
+            Key::Left,
+            Key::Right,
+        ];
+        for key in &keys {
+            if window.is_key_down(*key) {
+                joypad.keydown(*key);
+            }
+            if window.is_key_released(*key){
+                joypad.keyup(*key)
             }
         }
     }

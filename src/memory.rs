@@ -32,6 +32,7 @@ pub struct Mem {
     pub io: [u8; 512],
     pub hram: [u8; 1024],
     pub interrupt_enabled: u8,
+    pub joyselect: u8,
 }
 
 impl Mem {
@@ -47,6 +48,7 @@ impl Mem {
             io: [0; 512],
             hram: [0; 1024],
             interrupt_enabled: 0,
+            joyselect: 0x30,
         };
         m.boot_up();
         let mapper_type = m.borrow().read_byte(0x0147);
@@ -57,7 +59,8 @@ impl Mem {
     }
 
     pub fn boot_up(&mut self) {
-        self.write_byte(0xFF00, 0xFF);
+        self.write_byte(0xFF00, 0xCF);
+        self.io[0] = 0xCF;
         self.write_byte(0xFF01, 0x00);
         self.write_byte(0xFF02, 0x7E);
         self.write_byte(0xFF04, 0xAB);
@@ -112,6 +115,7 @@ impl Mem {
             }
             WRAM_START..=WRAM_END => self.wram[(address - WRAM_START) as usize],
             OAM_START..=OAM_END => self.oam[(address - OAM_START) as usize],
+            0xFF00 => self.io[0],
             IO_START..=IO_END => self.io[(address - IO_START) as usize],
             HRAM_START..=HRAM_END => self.hram[(address - HRAM_START) as usize],
             0xFFFF => self.interrupt_enabled,
@@ -139,6 +143,7 @@ impl Mem {
             WRAM_START..=WRAM_END => self.wram[(address - WRAM_START) as usize] = val,
             OAM_START..=OAM_END => self.oam[(address - OAM_START) as usize] = val,
             0xFF46 => self.dma_transfer(val),
+            0xFF00 => self.joyselect = val,
             IO_START..=IO_END => self.io[(address - IO_START) as usize] = val,
             HRAM_START..=HRAM_END => self.hram[(address - HRAM_START) as usize] = val,
             0xFFFF => self.interrupt_enabled = val,
@@ -147,7 +152,7 @@ impl Mem {
     }
 
     pub fn set_current_rom_bank(&mut self, val: u8) {
-        let n = val & 0x1F;
+        let n = val & 0x7F;
         match n {
             0 => self.rom_bank_n_ptr = 0,
             _ => self.rom_bank_n_ptr = (n - 1) as u32 * ROM_BANK_SIZE as u32,
@@ -157,7 +162,7 @@ impl Mem {
         let n = val & 0x1F;
         match n {
             0 => self.ram_bank_n_ptr = 0,
-            _ => self.ram_bank_n_ptr = (n - 1) as u16 * RAM_BANK_SIZE,
+            _ => self.ram_bank_n_ptr = n  as u16 * RAM_BANK_SIZE,
         }
     }
 
@@ -165,7 +170,7 @@ impl Mem {
         let src = (val as u16) << 8;
         for i in 0..=0x9F {
             let tocpy = self.read_byte(src + i as u16);
-            self.write_byte(0xFE00+i, tocpy);
+            self.write_byte(0xFE00 + i, tocpy);
         }
     }
 }

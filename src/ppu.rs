@@ -70,10 +70,10 @@ pub struct Ppu {
     pub mode: PpuMode,
     pub ly: u8,
     pub lcd_control: LcdControl,
-    pub buffer: [u8; 160 * 144],
-    pub bg_palette: [u8; 4],
-    pub obj0_palette: [u8; 4],
-    pub obj1_palette: [u8; 4],
+    pub buffer: [u32; 160 * 144],
+    pub bg_palette: [u32; 4],
+    pub obj0_palette: [u32; 4],
+    pub obj1_palette: [u32; 4],
 }
 
 impl Ppu {
@@ -93,7 +93,7 @@ impl Ppu {
                 obj_enable: true,
                 window_background_enable: true,
             },
-            buffer: [0u8; 160 * 144],
+            buffer: [0u32; 160 * 144],
             bg_palette: [0; 4],
             obj0_palette: [0; 4],
             obj1_palette: [0; 4],
@@ -150,10 +150,10 @@ impl Ppu {
             m_str, self.current_dots, self.ly, sy
         );
     }
-    pub fn next(&mut self, cycles: u16) -> Option<[u8; 160 * 144]> {
+    pub fn next(&mut self, cycles: u16) -> Option<[u32; 160 * 144]> {
         self.ly = self.memory.borrow().read_byte(LY_ADDRESS);
         self.update_lcd_control();
-        let mut updated_frame: Option<[u8; 160 * 144]> = None;
+        let mut updated_frame: Option<[u32; 160 * 144]> = None;
         if !self.lcd_control.ppu_enable {
             return updated_frame;
         }
@@ -295,20 +295,24 @@ impl Ppu {
                     0
                 };
                 let color = self.bg_palette[pix_l | pix_h];
-                self.buffer[(buffer_start + x as u16) as usize] = color;
+                self.buffer[(buffer_start + x as u16) as usize] = color as u32;
             }
         }
         if self.lcd_control.obj_enable {
             self.draw_sprites();
         }
     }
+    fn from_u8_rgb(r: u8, g: u8, b: u8) -> u32 {
+        let (r, g, b) = (r as u32, g as u32, b as u32);
+        (r << 16) | (g << 8) | b
+    }
 
-    fn get_color(&self, byte: u8) -> u8 {
+    fn get_color(&self, byte: u8) -> u32 {
         match byte & 3 {
-            0 => WHITE, // white
-            1 => LIGHT, //light
-            2 => DARK,  // dark
-            3 => BLACK, // black
+            0 => 0xFFFFFF, // white
+            1 => 0xBFBFBF, //light
+            2 => 0x686868,  // dark
+            3 => 0x000000, // black
             _ => 0,
         }
     }
@@ -335,17 +339,6 @@ impl Ppu {
             self.get_color(obj1_pallete_byte >> 4),
             self.get_color(obj1_pallete_byte >> 6),
         ];
-    }
-    fn read_palette(&self, pallete_index: u8) -> [u8; 4] {
-        let pallete_byte = self
-            .memory
-            .borrow()
-            .read_byte(PALETTE_ADDRESS + pallete_index as u16);
-        let color_3 = self.get_color(pallete_byte >> 6);
-        let color_2 = self.get_color(pallete_byte >> 4);
-        let color_1 = self.get_color(pallete_byte >> 2);
-        let color_0 = self.get_color(pallete_byte);
-        return [color_0, color_1, color_2, color_3];
     }
 
     fn draw_sprites(&mut self) {
@@ -397,14 +390,15 @@ impl Ppu {
                     0
                 };
                 let color = palette[pix_l | pix_h];
-                if color == 0xFF
+                if (pix_l | pix_h) == 0
                     || (self.buffer[(buffer_start + sprite_x_pos as u16 + x as u16) as usize]
-                        != self.bg_palette[0]
+                        != self.bg_palette[0] as u32
                         && sprite_attributes & 0x80 == 0x80)
                 {
                     continue;
                 }
-                self.buffer[(buffer_start + sprite_x_pos as u16 + x as u16) as usize] = color;
+                self.buffer[(buffer_start + sprite_x_pos as u16 + x as u16) as usize] =
+                    color as u32;
             }
         }
     }
