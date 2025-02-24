@@ -1,6 +1,8 @@
 # Gameboy emulator
 Gameboy emulator for DMG spec. It "works"™ but it probably won't run all games. I tested it out on pokemon red and tetris and it was just fine.
+
 ![Alt Text](./gifs/tetris.gif)
+
 ## Running
 When running provide a path to rom file 
     `cargo run ./path/to/rom.gb`
