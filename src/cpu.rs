@@ -6,9 +6,6 @@ const SUBTRACT_FLAG_BYTE_POSITION: u8 = 6;
 const HALF_CARRY_FLAG_BYTE_POSITION: u8 = 5;
 const CARRY_FLAG_BYTE_POSITION: u8 = 4;
 
-const LD_R8_R8_SRC_MASK: u8 = 0b111;
-const LD_R8_R8_DST_MASK: u8 = 0b111000;
-const R16_BLOCK1_MASK: u8 = 0b110000;
 const R8CB_MASK: u8 = 0b111;
 const BIT3CB_MASK: u8 = 0b111000;
 const TGT3_MASK: u8 = 0b00111000;
@@ -116,10 +113,10 @@ impl R8 {
 }
 
 pub struct Cpu {
-    pub(crate) registers: Registers,
-    pub(crate) program_counter: u16,
-    pub memory: Rc<RefCell<Mem>>,
-    pub cycles: u32,
+    registers: Registers,
+    program_counter: u16,
+    memory: Rc<RefCell<Mem>>,
+    cycles: u32,
     halted: bool,
     interrupts_enabled: bool,
 }
@@ -200,31 +197,6 @@ impl Cpu {
         self.registers.set_hl(result);
     }
 
-    fn ld_r8_r8(&mut self, source: R8, target: R8) {
-        let value = match source {
-            R8::B => self.registers.b,
-            R8::C => self.registers.c,
-            R8::D => self.registers.d,
-            R8::E => self.registers.e,
-            R8::H => self.registers.h,
-            R8::L => self.registers.l,
-            R8::HL_PTR => self.memory.borrow().read_byte(self.registers.get_hl()),
-            R8::A => self.registers.a,
-        };
-        match target {
-            R8::B => self.registers.b = value,
-            R8::C => self.registers.c = value,
-            R8::D => self.registers.d = value,
-            R8::E => self.registers.e = value,
-            R8::H => self.registers.h = value,
-            R8::L => self.registers.l = value,
-            R8::HL_PTR => self
-                .memory
-                .borrow_mut()
-                .write_byte(self.registers.get_hl(), value),
-            R8::A => self.registers.a = value,
-        };
-    }
 
     fn add_and_set_flags(&mut self, target: u8, value: u8, carry: bool, half_carry: bool) -> u8 {
         let (result, overflow) = target.overflowing_add(value);
@@ -986,14 +958,6 @@ impl Cpu {
 
             // ------------------------------ Block 2 load r8 r8 ------------------------------
             // ld r8 r8, 0 1 r8 dst r8 src
-            //0x40..=0x6F | 0x70..=0x75 | 0x77..=0x7F => {
-            //    self.ld_r8_r8(
-            //        R8::from_masked_u8(byte, LD_R8_R8_SRC_MASK).unwrap(),
-            //        R8::from_masked_u8(byte, LD_R8_R8_DST_MASK).unwrap(),
-            //    );
-            //    self.program_counter += 1;
-            //    cycles += 1;
-            //}
             0x40 => {
                 self.registers.b = self.registers.b;
                 self.program_counter += 1;
@@ -2443,7 +2407,6 @@ impl Cpu {
     }
 
     pub fn next(&mut self) -> u16{
-        //self.log();
         self.handle_interrupt();
         let cycles = if !self.halted {
             let current_byte = self.memory.borrow().read_byte(self.program_counter);
@@ -2451,10 +2414,6 @@ impl Cpu {
         } else {
             1
         };
-        let div = self.memory.borrow().read_byte(0xFF04);
-        self.memory
-            .borrow_mut()
-            .write_byte(0xFF04, div.wrapping_add(cycles as u8 * 4));
         return cycles;
     }
 }

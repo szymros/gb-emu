@@ -2,24 +2,30 @@ mod cpu;
 mod joypad;
 mod memory;
 mod ppu;
+mod timer;
 use cpu::Cpu;
 use joypad::Joypad;
 use memory::Mem;
 use minifb::{Key, Window, WindowOptions};
 use ppu::Ppu;
 use std::cell::RefCell;
+use std::env;
 use std::rc::Rc;
+use timer::Timer;
 
 const WINDOW_WIDTH: u32 = 480;
 const WINDOW_HEIGHT: u32 = 432;
 
 fn main() {
-    let rom = std::fs::read("./roms/pred.gb").unwrap();
+    let args: Vec<String> = env::args().collect();
+    let rom_path = &args[1];
+    let rom = std::fs::read(rom_path).unwrap();
 
     let mem = Rc::new(RefCell::new(Mem::setup(rom)));
     let mut cpu = Cpu::new(Rc::clone(&mem));
     let mut ppu = Ppu::new(Rc::clone(&mem));
     let mut joypad = Joypad::new(Rc::clone(&mem));
+    let mut timer = Timer::new(Rc::clone(&mem), 0);
 
     let mut buffer: Vec<u32> = vec![0; 160 * 144];
     let mut window = Window::new(
@@ -30,16 +36,15 @@ fn main() {
     )
     .unwrap();
     window.set_target_fps(60);
-    window.set_key_repeat_rate(0.001);
-    window.set_key_repeat_delay(0.001);
-    'running: loop {
-        if !window.is_open() {
+    window.set_key_repeat_rate(0.01);
+    window.set_key_repeat_delay(0.01);
+
+    loop {
+        if !window.is_open() || window.is_key_down(Key::Escape) {
             break;
         }
-        if window.is_key_down(Key::Escape) {
-            break 'running;
-        }
         let cycles = cpu.next();
+        timer.update_timer(cycles as u8);
 
         match ppu.next(cycles * 4) {
             Some(updated_frame) => {
@@ -62,8 +67,7 @@ fn main() {
         for key in &keys {
             if window.is_key_down(*key) {
                 joypad.keydown(*key);
-            }
-            if window.is_key_released(*key){
+            } else {
                 joypad.keyup(*key)
             }
         }

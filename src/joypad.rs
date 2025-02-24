@@ -33,11 +33,11 @@ impl Joypad {
             Key::S => self.buttons &= 0b1110,
             _ => (),
         };
-        let current_interrupt = self.mem.borrow().read_byte(0xFF0F);
+        let current_interrupt = self.mem.borrow().io[0x0F];
         self.mem
             .as_ref()
             .borrow_mut()
-            .write_byte(0xFF0F, current_interrupt | 0x10);
+            .io[0x0F] = current_interrupt | 0x10;
         self.update();
     }
 
